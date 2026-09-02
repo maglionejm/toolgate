@@ -165,11 +165,12 @@ export const ApprovalRequestSchema = z.object({
   upstream: z.string(),
   tool: z.string(),
   args: z.record(z.string(), z.unknown()),
-  status: z.enum(["pending", "approved", "denied", "expired"]),
+  status: z.enum(["pending", "approved", "denied", "expired", "executed"]),
   requestedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
   decidedAt: z.iso.datetime().optional(),
   decidedBy: z.string().optional(),
+  executedAt: z.iso.datetime().optional(),
 });
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>;
 
