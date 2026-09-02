@@ -56,6 +56,13 @@ importers:
       jose:
         specifier: ^6.2.10
         version: 6.2.10
+    devDependencies:
+      '@toolgate/server':
+        specifier: workspace:*
+        version: link:../server
+      hono:
+        specifier: ^4.13.5
+        version: 4.13.5
 
   packages/server:
     dependencies:
