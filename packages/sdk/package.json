@@ -15,5 +15,9 @@
   "dependencies": {
     "@toolgate/core": "workspace:*",
     "jose": "^6.2.10"
+  },
+  "devDependencies": {
+    "@toolgate/server": "workspace:*",
+    "hono": "^4.13.5"
   }
 }
