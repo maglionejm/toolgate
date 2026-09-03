@@ -59,6 +59,8 @@ class ServerConfig:
     checkpoint_interval: int = 64
     # Optional external witness: each checkpoint is POSTed here (fire-and-forget).
     anchor_url: str | None = None
+    # MCP surface (/v1/mcp): bearer-token auth without PoP proofs (ADR 0009).
+    mcp_enabled: bool = True
 
 
 class AuditLog:

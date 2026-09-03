@@ -48,110 +48,176 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@dataclass(frozen=True)
+class GateOutcome:
+    """Terminal result of a gate call: executed, or parked for approval.
+    Denials raise ToolgateError. Shared by the REST gate and the MCP surface."""
+
+    status: str  # "executed" | "pending_approval"
+    call_id: str
+    result: Any = None
+    approval_id: str | None = None
+    expires_at: str | None = None
+    reason: str | None = None
+
+
+async def run_gate_call(
+    ctx: AppContext,
+    claims: CapabilityClaims,
+    grant: DelegationGrant,
+    upstream_name: str,
+    tool: str,
+    args: dict[str, Any],
+) -> GateOutcome:
+    """The enforcement pipeline after authentication: rate → resolve → bounds/
+    policy (taint-aware) → budget → inject → execute → audit."""
+    if not ctx.gate_limiter.allow(grant.id):
+        raise ToolgateError(ErrorCodes.RATE_LIMITED, "gate call rate limit exceeded for this grant")
+    upstream, tool_def = _resolve_tool(ctx, claims.tenant, upstream_name, tool)
+
+    call_id = new_id("call")
+    tainted = ctx.store.is_txn_tainted(claims.txn)
+    call = ToolCallContext(
+        upstream=upstream_name,
+        tool=tool,
+        args=args,
+        cost_units=tool_def.costUnits,
+        tainted=tainted,
+    )
+    policy = ctx.store.get_policy(grant.policyId)
+    if not policy:
+        raise ToolgateError(ErrorCodes.INTERNAL, "grant policy missing")
+
+    decision = decide(policy, call, claims.authorization_details)
+    actor = AuditActor(
+        agentId=claims.act.sub, userId=claims.sub, grantId=grant.id, tokenJti=claims.jti
+    )
+    action = AuditAction(
+        callId=call_id, upstream=upstream_name, tool=tool, argsHash=hash_args(args)
+    )
+
+    if decision.effect == "deny":
+        ctx.audit.record(
+            AuditRecordInput(
+                id=new_id("evt"),
+                tenantId=claims.tenant,
+                ts=_now(),
+                actor=actor,
+                action=action,
+                decision=_to_audit_decision(decision),
+                result=AuditResult(status="denied"),
+            )
+        )
+        details: dict[str, Any] = {"source": decision.source}
+        if decision.rule_id:
+            details["ruleId"] = decision.rule_id
+        raise ToolgateError(ErrorCodes.DENIED, decision.reason, details)
+
+    if decision.effect == "require_approval":
+        approval = ApprovalRequest(
+            id=new_id("apr"),
+            tenantId=claims.tenant,
+            callId=call_id,
+            grantId=grant.id,
+            agentId=claims.act.sub,
+            userId=claims.sub,
+            upstream=upstream_name,
+            tool=tool,
+            args=args,
+            status="pending",
+            requestedAt=_now(),
+            expiresAt=(
+                datetime.now(UTC) + timedelta(seconds=ctx.config.approval_ttl_seconds)
+            ).isoformat(),
+        )
+        ctx.store.put_approval(approval)
+        ctx.store.prune_approvals()
+        ctx.audit.record(
+            AuditRecordInput(
+                id=new_id("evt"),
+                tenantId=claims.tenant,
+                ts=_now(),
+                actor=actor,
+                action=action,
+                decision=_to_audit_decision(decision),
+                result=AuditResult(status="pending_approval"),
+            )
+        )
+        return GateOutcome(
+            status="pending_approval",
+            call_id=call_id,
+            approval_id=approval.id,
+            expires_at=approval.expiresAt,
+            reason=decision.reason,
+        )
+
+    result = await _execute_call(
+        ctx,
+        txn=claims.txn,
+        actor=actor,
+        action=action,
+        decision=_to_audit_decision(decision),
+        grant=grant,
+        upstream=upstream,
+        tool_def=tool_def,
+        tool=tool,
+        args=args,
+    )
+    return GateOutcome(status="executed", call_id=call_id, result=result)
+
+
+def reachable_tools(ctx: AppContext, claims: CapabilityClaims) -> list[dict[str, Any]]:
+    """Tools within the token's authorization_details — the discovery surface
+    for the MCP layer and framework adapters."""
+    tools: list[dict[str, Any]] = []
+    for detail in claims.authorization_details:
+        upstream = ctx.store.find_upstream_by_name(claims.tenant, detail.upstream)
+        if not upstream:
+            continue
+        for tool_def in upstream.tools:
+            if "*" not in detail.tools and tool_def.name not in detail.tools:
+                continue
+            tools.append(
+                {
+                    "upstream": upstream.name,
+                    "name": tool_def.name,
+                    "description": tool_def.description,
+                    "sideEffecting": tool_def.sideEffecting,
+                    "costUnits": tool_def.costUnits,
+                    "contentTrust": tool_def.contentTrust,
+                    "argsSchema": tool_def.argsSchema
+                    or {"type": "object", "additionalProperties": True},
+                }
+            )
+    return tools
+
+
 def gate_router(ctx: AppContext) -> APIRouter:
     router = APIRouter(prefix="/v1/gate")
 
     @router.post("/call/{upstream_name}")
     async def call_tool(upstream_name: str, body: CallBody, request: Request) -> Any:
         authed = await _authenticate(ctx, request, f"/v1/gate/call/{upstream_name}")
-        claims, grant = authed.claims, authed.grant
-        if not ctx.gate_limiter.allow(grant.id):
-            raise ToolgateError(
-                ErrorCodes.RATE_LIMITED, "gate call rate limit exceeded for this grant"
-            )
-        upstream, tool_def = _resolve_tool(ctx, claims.tenant, upstream_name, body.tool)
-
-        call_id = new_id("call")
-        tainted = ctx.store.is_txn_tainted(claims.txn)
-        call = ToolCallContext(
-            upstream=upstream_name,
-            tool=body.tool,
-            args=body.args,
-            cost_units=tool_def.costUnits,
-            tainted=tainted,
+        outcome = await run_gate_call(
+            ctx, authed.claims, authed.grant, upstream_name, body.tool, body.args
         )
-        policy = ctx.store.get_policy(grant.policyId)
-        if not policy:
-            raise ToolgateError(ErrorCodes.INTERNAL, "grant policy missing")
-
-        decision = decide(policy, call, claims.authorization_details)
-        actor = AuditActor(
-            agentId=claims.act.sub, userId=claims.sub, grantId=grant.id, tokenJti=claims.jti
-        )
-        action = AuditAction(
-            callId=call_id, upstream=upstream_name, tool=body.tool, argsHash=hash_args(body.args)
-        )
-
-        if decision.effect == "deny":
-            ctx.audit.record(
-                AuditRecordInput(
-                    id=new_id("evt"),
-                    tenantId=claims.tenant,
-                    ts=_now(),
-                    actor=actor,
-                    action=action,
-                    decision=_to_audit_decision(decision),
-                    result=AuditResult(status="denied"),
-                )
-            )
-            details: dict[str, Any] = {"source": decision.source}
-            if decision.rule_id:
-                details["ruleId"] = decision.rule_id
-            raise ToolgateError(ErrorCodes.DENIED, decision.reason, details)
-
-        if decision.effect == "require_approval":
-            approval = ApprovalRequest(
-                id=new_id("apr"),
-                tenantId=claims.tenant,
-                callId=call_id,
-                grantId=grant.id,
-                agentId=claims.act.sub,
-                userId=claims.sub,
-                upstream=upstream_name,
-                tool=body.tool,
-                args=body.args,
-                status="pending",
-                requestedAt=_now(),
-                expiresAt=(
-                    datetime.now(UTC) + timedelta(seconds=ctx.config.approval_ttl_seconds)
-                ).isoformat(),
-            )
-            ctx.store.put_approval(approval)
-            ctx.store.prune_approvals()
-            ctx.audit.record(
-                AuditRecordInput(
-                    id=new_id("evt"),
-                    tenantId=claims.tenant,
-                    ts=_now(),
-                    actor=actor,
-                    action=action,
-                    decision=_to_audit_decision(decision),
-                    result=AuditResult(status="pending_approval"),
-                )
-            )
+        if outcome.status == "pending_approval":
             return JSONResponse(
                 status_code=202,
                 content={
                     "status": "pending_approval",
-                    "approval_id": approval.id,
-                    "expires_at": approval.expiresAt,
-                    "reason": decision.reason,
+                    "approval_id": outcome.approval_id,
+                    "expires_at": outcome.expires_at,
+                    "reason": outcome.reason,
                 },
             )
+        return {"status": "executed", "call_id": outcome.call_id, "result": outcome.result}
 
-        result = await _execute_call(
-            ctx,
-            txn=claims.txn,
-            actor=actor,
-            action=action,
-            decision=_to_audit_decision(decision),
-            grant=grant,
-            upstream=upstream,
-            tool_def=tool_def,
-            tool=body.tool,
-            args=body.args,
-        )
-        return {"status": "executed", "call_id": call_id, "result": result}
+    @router.get("/tools")
+    async def list_reachable_tools(request: Request) -> list[dict[str, Any]]:
+        """Discovery for SDK adapters: what can this token actually call?"""
+        authed = await _authenticate_token_only(ctx, request)
+        return reachable_tools(ctx, authed.claims)
 
     @router.get("/approvals/{approval_id}")
     async def approval_status(approval_id: str, request: Request) -> dict[str, Any]:

@@ -142,6 +142,55 @@ def init(
 
 
 @app.command()
+def report(
+    tenant: Annotated[str, typer.Option("--tenant", "-t")],
+) -> None:
+    """Usage rollup derived from the signed audit chain."""
+    data = client().get("/v1/control/reports", tenantId=tenant)
+    tot = data["totals"]
+    if state["json"]:
+        emit(data)
+        return
+    console.print(
+        Panel(
+            f"calls [bold]{tot['calls']}[/] · executed {tot['executed']} · "
+            f"denied {tot['denied']} · parked {tot['pendingApproval']} · "
+            f"errors {tot['errors']}\ncost units spent [bold]{tot['costUnits']}[/] · "
+            f"approvals executed {data['approvals']['executedAfterApproval']}"
+            + (
+                f" (avg {data['approvals']['avgApprovalToExecuteSeconds']}s to execute)"
+                if data["approvals"]["avgApprovalToExecuteSeconds"] is not None
+                else ""
+            ),
+            title=f"usage — {tenant}",
+            border_style="green",
+        )
+    )
+    console.print(
+        _table(
+            "by tool",
+            ["tool", "calls", "executed", "denied", "cost"],
+            [
+                [r["tool"], str(r["calls"]), str(r["executed"]), str(r["denied"]),
+                 str(r["costUnits"])]
+                for r in data["byTool"]
+            ],
+        )
+    )
+    console.print(
+        _table(
+            "by agent",
+            ["agent", "calls", "executed", "denied", "cost"],
+            [
+                [r["agentId"], str(r["calls"]), str(r["executed"]), str(r["denied"]),
+                 str(r["costUnits"])]
+                for r in data["byAgent"]
+            ],
+        )
+    )
+
+
+@app.command()
 def server() -> None:
     """Run the Toolgate server (control plane + gate)."""
     from toolgate.server.main import main as server_main

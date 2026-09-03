@@ -8,6 +8,7 @@ from toolgate.core import ErrorCodes, ToolgateError
 from .context import AppContext
 from .control import control_router, token_router
 from .gate import gate_router
+from .mcp import mcp_router
 
 # Reject oversized request bodies before they are buffered/parsed. Tool-call
 # args are small; a multi-megabyte body is either abuse or a mistake, and it
@@ -74,6 +75,7 @@ def create_app(ctx: AppContext) -> FastAPI:
     app.include_router(control_router(ctx))
     app.include_router(token_router(ctx))
     app.include_router(gate_router(ctx))
+    app.include_router(mcp_router(ctx))
 
     # Operator console: static SPA, authenticates with operator keys client-side.
     from toolgate.console import static_dir

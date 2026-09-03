@@ -113,6 +113,19 @@ class ToolgateClient:
             raise _error_from(res.status_code, body)
         return CallResult(status="executed", call_id=body["call_id"], result=body["result"])
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        """The tools this grant's tokens can actually reach — the discovery
+        surface used by the framework adapters."""
+        grant = self.token()
+        res = self._http.get(
+            f"{self._base_url}/v1/gate/tools",
+            headers={"authorization": f"Bearer {grant.access_token}"},
+        )
+        body = res.json()
+        if res.status_code >= 400:
+            raise _error_from(res.status_code, body)
+        return body
+
     def wait_for_approval(
         self, approval_id: str, *, poll_seconds: float = 1.5, timeout_seconds: float = 120
     ) -> CallResult:
