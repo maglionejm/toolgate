@@ -1,0 +1,41 @@
+[project]
+name = "toolgate"
+version = "0.2.0"
+description = "Capability control plane for embedded AI agents: scoped tokens, policy enforcement, credential injection, signed audit."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.8",
+    "jwcrypto>=1.5.6",
+    "cryptography>=43",
+    "httpx>=0.27",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+toolgate-server = "toolgate.server.main:main"
+toolgate-demo = "toolgate.demo:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/toolgate"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
