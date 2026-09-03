@@ -412,6 +412,73 @@ def test_m8_normal_call_still_succeeds():
     assert r.status_code == 200
 
 
+# ---------------------------------------------------------------------------
+# Tenant isolation — a token from tenant A cannot reach tenant B's upstream
+# ---------------------------------------------------------------------------
+
+
+def test_cross_tenant_upstream_is_unreachable():
+    ctx, client, admin, post, tenant_a, user_a, _calls = _fresh_env()
+    tenant_b = post("/v1/control/tenants", {"name": "B"})["id"]
+    # Tenant B owns a secret upstream.
+    post(
+        "/v1/control/upstreams",
+        {
+            "tenantId": tenant_b,
+            "name": "secretcrm",
+            "baseUrl": "https://b.internal",
+            "credential": {"mode": "bearer", "secret": "B-SECRET"},
+            "tools": [{"name": "read"}],
+        },
+    )
+    # Tenant A gets a grant that *names* B's upstream in its authorization.
+    agent_keys = generate_ed25519_key_pair()
+    agent = post(
+        "/v1/control/agents",
+        {"tenantId": tenant_a, "name": "a", "publicJwk": agent_keys.public_jwk},
+    )["id"]
+    policy = post(
+        "/v1/control/policies",
+        {"tenantId": tenant_a, "name": "p", "rules": [{"id": "a", "effect": "allow", "match": {}}]},
+    )["id"]
+    grant = post(
+        "/v1/control/grants",
+        {
+            "tenantId": tenant_a,
+            "userId": user_a,
+            "agentId": agent,
+            "policyId": policy,
+            "authorization": [{"upstream": "secretcrm", "tools": ["*"]}],
+            "budgetMaxUnits": 10,
+        },
+    )["id"]
+    assertion = sign_client_assertion(
+        agent_keys.private_jwk, agent_id=agent, token_url=f"{ctx.config.issuer}/v1/token"
+    )
+    token = client.post(
+        "/v1/token",
+        json={
+            "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+            "client_assertion": assertion,
+            "grant_id": grant,
+        },
+    ).json()["access_token"]
+
+    path = "/v1/gate/call/secretcrm"
+    proof = sign_pop_proof(
+        agent_keys.private_jwk, htm="POST", htu=f"{PUBLIC_URL}{path}", access_token=token
+    )
+    r = client.post(
+        path,
+        headers={"authorization": f"Bearer {token}", "x-toolgate-proof": proof},
+        json={"tool": "read", "args": {}},
+    )
+    # Upstream resolution is scoped to the token's tenant, so B's upstream is
+    # invisible to A — no cross-tenant credential use.
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == ErrorCodes.NOT_FOUND
+
+
 def test_l1_security_headers_present():
     ctx, client, *_ = _fresh_env()
     r = client.get("/healthz")
