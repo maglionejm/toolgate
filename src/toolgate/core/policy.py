@@ -1,5 +1,6 @@
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Literal
 
 from .types import (
@@ -91,12 +92,25 @@ def _rule_matches(rule: PolicyRule, call: ToolCallContext) -> bool:
     return True
 
 
+@lru_cache(maxsize=512)
+def _compiled_glob(pattern: str) -> re.Pattern[str]:
+    return re.compile(".*".join(re.escape(part) for part in pattern.split("*")))
+
+
+@lru_cache(maxsize=512)
+def _compiled_search(pattern: str) -> re.Pattern[str]:
+    return re.compile(pattern)
+
+
 def glob_match(pattern: str, value: str) -> bool:
-    """Minimal glob: "*" matches any run of characters; everything else is literal."""
+    """Minimal glob: "*" matches any run of characters; everything else is literal.
+
+    Policies contain a small, stable set of patterns, so compiled regexes are
+    LRU-cached — the gate evaluates these on every call.
+    """
     if pattern == "*":
         return True
-    escaped = ".*".join(re.escape(part) for part in pattern.split("*"))
-    return re.fullmatch(escaped, value) is not None
+    return _compiled_glob(pattern).fullmatch(value) is not None
 
 
 def constraint_holds(constraint: ArgConstraint, args: dict[str, Any]) -> bool:
@@ -131,7 +145,7 @@ def constraint_holds(constraint: ArgConstraint, args: dict[str, Any]) -> bool:
         return (
             isinstance(actual, str)
             and isinstance(expected, str)
-            and re.search(expected, actual) is not None
+            and _compiled_search(expected).search(actual) is not None
         )
     return False
 

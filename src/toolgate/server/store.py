@@ -3,6 +3,8 @@ import sqlite3
 import time
 from typing import Any
 
+from pydantic import BaseModel
+
 from toolgate.core import (
     AgentIdentity,
     ApprovalRequest,
@@ -60,6 +62,11 @@ class Store:
         self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.db.execute("PRAGMA journal_mode = WAL;")
         self.db.executescript(_SCHEMA)
+        # Parsed-document cache: pydantic validation dominates read cost on the
+        # gate hot path. Invalidated on every write; callers get shallow copies
+        # so top-level mutation cannot poison the cache.
+        self._doc_cache: dict[str, Any] = {}
+        self._last_jti_prune = 0.0
 
     # -- settings -------------------------------------------------------------
 
@@ -77,11 +84,23 @@ class Store:
     # -- generic entities -------------------------------------------------------
 
     def _put(self, kind: str, entity_id: str, tenant_id: str | None, doc: Any) -> None:
+        self._doc_cache.pop(entity_id, None)
         self.db.execute(
             "INSERT INTO entities (id, kind, tenant_id, json) VALUES (?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET json = excluded.json",
             (entity_id, kind, tenant_id, json.dumps(doc)),
         )
+
+    def _get_model[M: BaseModel](self, kind: str, entity_id: str, model: type[M]) -> M | None:
+        cached = self._doc_cache.get(entity_id)
+        if cached is not None:
+            return cached.model_copy()
+        doc = self._get(kind, entity_id)
+        if doc is None:
+            return None
+        validated = model.model_validate(doc)
+        self._doc_cache[entity_id] = validated
+        return validated.model_copy()
 
     def _get(self, kind: str, entity_id: str) -> dict[str, Any] | None:
         row = self.db.execute(
@@ -102,38 +121,38 @@ class Store:
         self._put("tenant", t.id, t.id, t.model_dump(mode="json", exclude_none=True))
 
     def get_tenant(self, tenant_id: str) -> Tenant | None:
-        doc = self._get("tenant", tenant_id)
-        return Tenant.model_validate(doc) if doc else None
+        return self._get_model("tenant", tenant_id, Tenant)
 
     def put_user(self, u: User) -> None:
         self._put("user", u.id, u.tenantId, u.model_dump(mode="json", exclude_none=True))
 
     def get_user(self, user_id: str) -> User | None:
-        doc = self._get("user", user_id)
-        return User.model_validate(doc) if doc else None
+        return self._get_model("user", user_id, User)
 
     def put_agent(self, a: AgentIdentity) -> None:
         self._put("agent", a.id, a.tenantId, a.model_dump(mode="json", exclude_none=True))
 
     def get_agent(self, agent_id: str) -> AgentIdentity | None:
-        doc = self._get("agent", agent_id)
-        return AgentIdentity.model_validate(doc) if doc else None
+        return self._get_model("agent", agent_id, AgentIdentity)
 
     def put_upstream(self, u: Upstream) -> None:
         self._put("upstream", u.id, u.tenantId, u.model_dump(mode="json", exclude_none=True))
 
     def find_upstream_by_name(self, tenant_id: str, name: str) -> Upstream | None:
-        for doc in self._list("upstream", tenant_id):
-            if doc.get("name") == name:
-                return Upstream.model_validate(doc)
-        return None
+        # Runs on every gate call: resolve the id with a single indexed +
+        # json_extract query, then reuse the parsed-document cache.
+        row = self.db.execute(
+            "SELECT id FROM entities WHERE kind = 'upstream' AND tenant_id = ? "
+            "AND json_extract(json, '$.name') = ?",
+            (tenant_id, name),
+        ).fetchone()
+        return self._get_model("upstream", row[0], Upstream) if row else None
 
     def put_policy(self, p: Policy) -> None:
         self._put("policy", p.id, p.tenantId, p.model_dump(mode="json", exclude_none=True))
 
     def get_policy(self, policy_id: str) -> Policy | None:
-        doc = self._get("policy", policy_id)
-        return Policy.model_validate(doc) if doc else None
+        return self._get_model("policy", policy_id, Policy)
 
     def put_grant(self, g: DelegationGrant) -> None:
         self._put("grant", g.id, g.tenantId, g.model_dump(mode="json", exclude_none=True))
@@ -144,10 +163,10 @@ class Store:
         )
 
     def get_grant(self, grant_id: str) -> DelegationGrant | None:
-        doc = self._get("grant", grant_id)
-        if not doc:
+        grant = self._get_model("grant", grant_id, DelegationGrant)
+        if not grant:
             return None
-        grant = DelegationGrant.model_validate(doc)
+        # Budget lives in its own row (atomic charging); merge the live value.
         row = self.db.execute(
             "SELECT max_units, spent_units FROM grant_budgets WHERE grant_id = ?", (grant_id,)
         ).fetchone()
@@ -168,8 +187,7 @@ class Store:
         self._put("approval", a.id, a.tenantId, a.model_dump(mode="json", exclude_none=True))
 
     def get_approval(self, approval_id: str) -> ApprovalRequest | None:
-        doc = self._get("approval", approval_id)
-        return ApprovalRequest.model_validate(doc) if doc else None
+        return self._get_model("approval", approval_id, ApprovalRequest)
 
     def list_approvals(self, tenant_id: str, status: str | None = None) -> list[ApprovalRequest]:
         approvals = [ApprovalRequest.model_validate(d) for d in self._list("approval", tenant_id)]
@@ -179,8 +197,14 @@ class Store:
 
     def consume_jti(self, jti: str, kind: str, ttl_seconds: int) -> bool:
         """True when the jti was fresh (and is now consumed)."""
-        now_ms = int(time.time() * 1000)
-        self.db.execute("DELETE FROM used_jtis WHERE expires_at < ?", (now_ms,))
+        now = time.time()
+        now_ms = int(now * 1000)
+        # Pruning is maintenance, not correctness (expiry is enforced by the
+        # proof/assertion time checks) — throttle it to one sweep per minute
+        # instead of a delete on every call.
+        if now - self._last_jti_prune > 60:
+            self.db.execute("DELETE FROM used_jtis WHERE expires_at < ?", (now_ms,))
+            self._last_jti_prune = now
         try:
             self.db.execute(
                 "INSERT INTO used_jtis (jti, kind, expires_at) VALUES (?, ?, ?)",

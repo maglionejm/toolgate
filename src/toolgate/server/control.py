@@ -306,7 +306,7 @@ def token_router(ctx: AppContext) -> APIRouter:
             ctx.config.max_token_ttl_seconds,
         )
         minted = mint_capability_token(
-            ctx.control_keys.private_jwk,
+            ctx.control_signing_jwk,
             issuer=ctx.config.issuer,
             audience=ctx.config.gate_audience,
             tenant_id=grant.tenantId,

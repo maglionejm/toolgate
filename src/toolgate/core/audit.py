@@ -14,6 +14,18 @@ from .types import AuditRecord, AuditRecordInput
 
 GENESIS_HASH = "0" * 64
 
+SigningKey = dict[str, Any] | Ed25519PrivateKey
+VerifyKey = dict[str, Any] | Ed25519PublicKey
+
+
+def signing_key_from_jwk(private_jwk: dict[str, Any]) -> Ed25519PrivateKey:
+    """Parse once and reuse: the gate signs every audit record with this key."""
+    return Ed25519PrivateKey.from_private_bytes(_b64url_decode(private_jwk["d"]))
+
+
+def verify_key_from_jwk(public_jwk: dict[str, Any]) -> Ed25519PublicKey:
+    return Ed25519PublicKey.from_public_bytes(_b64url_decode(public_jwk["x"]))
+
 
 def sha256_hex(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
@@ -32,7 +44,7 @@ def _compute_hash(record_body: dict[str, Any]) -> str:
 def append_audit_record(
     prev: AuditRecord | None,
     record_input: AuditRecordInput,
-    gate_private_jwk: dict[str, Any],
+    gate_private_jwk: SigningKey,
 ) -> AuditRecord:
     body = record_input.model_dump(mode="json", exclude_none=True)
     body["seq"] = prev.seq + 1 if prev else 1
@@ -51,8 +63,17 @@ class ChainVerification:
 
 
 def verify_audit_chain(
-    records: list[AuditRecord], gate_public_jwk: dict[str, Any]
+    records: list[AuditRecord], gate_public_jwk: VerifyKey
 ) -> ChainVerification:
+    key: Ed25519PublicKey | None
+    if isinstance(gate_public_jwk, Ed25519PublicKey):
+        key = gate_public_jwk
+    else:
+        try:
+            key = verify_key_from_jwk(gate_public_jwk)
+        except (KeyError, ValueError):
+            key = None
+
     prev_hash = GENESIS_HASH
     prev_seq = 0
     for record in records:
@@ -65,7 +86,7 @@ def verify_audit_chain(
             return _broken(len(records), record.seq, "prevHash does not match previous record")
         if _compute_hash(body) != record.hash:
             return _broken(len(records), record.seq, "record content does not match its hash")
-        if not _verify_hash_signature(record.hash, record.sig, gate_public_jwk):
+        if key is None or not _verify_hash_signature(record.hash, record.sig, key):
             return _broken(len(records), record.seq, "signature invalid")
         prev_hash = record.hash
         prev_seq = record.seq
@@ -80,16 +101,19 @@ def _b64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
 
-def _sign_hash(hash_hex: str, private_jwk: dict[str, Any]) -> str:
-    key = Ed25519PrivateKey.from_private_bytes(_b64url_decode(private_jwk["d"]))
+def _sign_hash(hash_hex: str, private_key: SigningKey) -> str:
+    key = (
+        private_key
+        if isinstance(private_key, Ed25519PrivateKey)
+        else signing_key_from_jwk(private_key)
+    )
     sig = key.sign(bytes.fromhex(hash_hex))
     return base64.urlsafe_b64encode(sig).rstrip(b"=").decode()
 
 
-def _verify_hash_signature(hash_hex: str, sig: str, public_jwk: dict[str, Any]) -> bool:
+def _verify_hash_signature(hash_hex: str, sig: str, key: Ed25519PublicKey) -> bool:
     try:
-        key = Ed25519PublicKey.from_public_bytes(_b64url_decode(public_jwk["x"]))
         key.verify(_b64url_decode(sig), bytes.fromhex(hash_hex))
         return True
-    except (InvalidSignature, KeyError, ValueError):
+    except (InvalidSignature, ValueError):
         return False

@@ -17,7 +17,7 @@ from typing import Any
 from jwcrypto import jwk, jws, jwt
 
 from .errors import ErrorCodes, ToolgateError
-from .keys import public_jwk_from_private
+from .keys import KeyLike, public_jwk_from_private, to_jwk
 
 CLIENT_ASSERTION_TYP = "tg-client+jwt"
 POP_PROOF_TYP = "tg-pop+jwt"
@@ -31,13 +31,13 @@ _PROOF_CLOCK_SKEW_SECONDS = 5
 
 
 def sign_client_assertion(
-    agent_private_jwk: dict[str, Any],
+    agent_private_jwk: KeyLike,
     *,
     agent_id: str,
     token_url: str,
     ttl_seconds: int = 60,
 ) -> str:
-    key = jwk.JWK(**agent_private_jwk)
+    key = to_jwk(agent_private_jwk)
     now = int(time.time())
     token = jwt.JWT(
         header={"alg": "EdDSA", "typ": CLIENT_ASSERTION_TYP},
@@ -61,12 +61,12 @@ class VerifiedAssertion:
 
 
 def verify_client_assertion(
-    agent_public_jwk: dict[str, Any],
+    agent_public_jwk: KeyLike,
     assertion: str,
     *,
     expected_audience: str,
 ) -> VerifiedAssertion:
-    key = jwk.JWK(**agent_public_jwk)
+    key = to_jwk(agent_public_jwk)
     verifier = jwt.JWT(check_claims={"aud": expected_audience, "exp": None})
     verifier.leeway = _PROOF_CLOCK_SKEW_SECONDS
     try:
@@ -101,18 +101,23 @@ def access_token_hash(token: str) -> str:
 
 
 def sign_pop_proof(
-    agent_private_jwk: dict[str, Any],
+    agent_private_jwk: KeyLike,
     *,
     htm: str,
     htu: str,
     access_token: str,
 ) -> str:
-    key = jwk.JWK(**agent_private_jwk)
+    key = to_jwk(agent_private_jwk)
+    if isinstance(agent_private_jwk, dict):
+        header_jwk = public_jwk_from_private(agent_private_jwk)
+    else:
+        exported: dict[str, Any] = json.loads(key.export_public())
+        header_jwk = {k: exported[k] for k in ("kty", "crv", "x")}
     token = jwt.JWT(
         header={
             "alg": "EdDSA",
             "typ": POP_PROOF_TYP,
-            "jwk": public_jwk_from_private(agent_private_jwk),
+            "jwk": header_jwk,
         },
         claims={
             "htm": htm.upper(),
