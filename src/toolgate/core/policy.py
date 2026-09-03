@@ -34,6 +34,9 @@ class ToolCallContext:
     tool: str
     args: dict[str, Any]
     cost_units: int
+    # True when this call's transaction has already touched a tool marked
+    # contentTrust=untrusted_source — the lethal-trifecta signal.
+    tainted: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +116,12 @@ def evaluate_policy(policy: Policy, call: ToolCallContext) -> Decision:
 
 
 def _rule_matches(rule: PolicyRule, call: ToolCallContext) -> bool:
+    if (
+        rule.when is not None
+        and rule.when.txnTouchedUntrusted is not None
+        and rule.when.txnTouchedUntrusted != call.tainted
+    ):
+        return False
     if rule.match.upstream is not None and not glob_match(rule.match.upstream, call.upstream):
         return False
     if rule.match.tool is not None and not glob_match(rule.match.tool, call.tool):

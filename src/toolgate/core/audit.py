@@ -10,7 +10,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from .canonical import canonical_json
-from .types import AuditRecord, AuditRecordInput
+from .types import AuditRecord, AuditRecordInput, Checkpoint
+
+GATE_KEY_ROTATION_TOOL = "gate-key-rotation"
 
 GENESIS_HASH = "0" * 64
 
@@ -45,10 +47,13 @@ def append_audit_record(
     prev: AuditRecord | None,
     record_input: AuditRecordInput,
     gate_private_jwk: SigningKey,
+    sig_kid: str | None = None,
 ) -> AuditRecord:
     body = record_input.model_dump(mode="json", exclude_none=True)
     body["seq"] = prev.seq + 1 if prev else 1
     body["prevHash"] = prev.hash if prev else GENESIS_HASH
+    if sig_kid is not None:
+        body["sigKid"] = sig_kid
     record_hash = _compute_hash(body)
     sig = _sign_hash(record_hash, gate_private_jwk)
     return AuditRecord.model_validate({**body, "hash": record_hash, "sig": sig})
@@ -62,17 +67,45 @@ class ChainVerification:
     reason: str | None = None
 
 
+def _coerce_verify_key(key: VerifyKey) -> Ed25519PublicKey | None:
+    if isinstance(key, Ed25519PublicKey):
+        return key
+    try:
+        return verify_key_from_jwk(key)
+    except (KeyError, ValueError):
+        return None
+
+
+def _is_jwks_mapping(key: VerifyKey | dict[str, VerifyKey]) -> bool:
+    return isinstance(key, dict) and "kty" not in key
+
+
 def verify_audit_chain(
-    records: list[AuditRecord], gate_public_jwk: VerifyKey
+    records: list[AuditRecord],
+    gate_public_jwk: VerifyKey | dict[str, VerifyKey],
 ) -> ChainVerification:
-    key: Ed25519PublicKey | None
-    if isinstance(gate_public_jwk, Ed25519PublicKey):
-        key = gate_public_jwk
+    """Verify hash linkage and per-record signatures.
+
+    Single-key mode (a JWK dict or key object): every signature is checked
+    against that one key — the pre-rotation behavior.
+
+    JWKS mode (a mapping of kid -> key): signatures are checked against the
+    record's `sigKid`, and key-rotation *lineage* is enforced — only the kid of
+    the first record (or legacy unkeyed records, verified with the lineage
+    root) is trusted a priori; any other kid must first be introduced by a
+    `gate-key-rotation` handoff record signed under an already-trusted kid.
+    """
+    jwks_mode = _is_jwks_mapping(gate_public_jwk)
+    if jwks_mode:
+        keys = {kid: _coerce_verify_key(k) for kid, k in gate_public_jwk.items()}  # type: ignore[union-attr]
+        root_kid = records[0].sigKid if records else None
+        trusted_kids: set[str | None] = {root_kid, None}
+        root_key = keys.get(root_kid) if root_kid is not None else None
     else:
-        try:
-            key = verify_key_from_jwk(gate_public_jwk)
-        except (KeyError, ValueError):
-            key = None
+        only = _coerce_verify_key(gate_public_jwk)  # type: ignore[arg-type]
+        keys = {}
+        trusted_kids = set()
+        root_key = only
 
     prev_hash = GENESIS_HASH
     prev_seq = 0
@@ -86,8 +119,27 @@ def verify_audit_chain(
             return _broken(len(records), record.seq, "prevHash does not match previous record")
         if _compute_hash(body) != record.hash:
             return _broken(len(records), record.seq, "record content does not match its hash")
+
+        if jwks_mode:
+            if record.sigKid not in trusted_kids:
+                return _broken(
+                    len(records),
+                    record.seq,
+                    f"kid {record.sigKid} used before a handoff introduced it",
+                )
+            key = keys.get(record.sigKid) if record.sigKid is not None else root_key
+            if key is None:
+                return _broken(len(records), record.seq, f"unknown signing kid {record.sigKid}")
+        else:
+            key = root_key
+
         if key is None or not _verify_hash_signature(record.hash, record.sig, key):
             return _broken(len(records), record.seq, "signature invalid")
+
+        if jwks_mode and record.action.tool == GATE_KEY_ROTATION_TOOL and record.meta:
+            new_kid = record.meta.get("newKid")
+            if isinstance(new_kid, str):
+                trusted_kids.add(new_kid)
         prev_hash = record.hash
         prev_seq = record.seq
     return ChainVerification(valid=True, length=len(records))
@@ -117,3 +169,64 @@ def _verify_hash_signature(hash_hex: str, sig: str, key: Ed25519PublicKey) -> bo
         return True
     except (InvalidSignature, ValueError):
         return False
+
+
+# ---------------------------------------------------------------------------
+# Merkle checkpoints (RFC 6962-style domain separation). A checkpoint commits
+# to the first `seq` record hashes; anchoring it externally means rewriting
+# history is detectable even by a party that no longer trusts the gate key.
+# ---------------------------------------------------------------------------
+
+
+def merkle_root(record_hashes: list[str]) -> str:
+    """RFC 6962 tree: leaf = SHA-256(0x00 || leaf_bytes), node = SHA-256(0x01 || l || r).
+    Odd nodes are promoted unchanged. Input hashes are the records' hex hashes."""
+    if not record_hashes:
+        return GENESIS_HASH
+    level = [hashlib.sha256(b"\x00" + bytes.fromhex(h)).digest() for h in record_hashes]
+    while len(level) > 1:
+        paired = []
+        for i in range(0, len(level) - 1, 2):
+            paired.append(hashlib.sha256(b"\x01" + level[i] + level[i + 1]).digest())
+        if len(level) % 2 == 1:
+            paired.append(level[-1])
+        level = paired
+    return level[0].hex()
+
+
+def make_checkpoint(
+    records: list[AuditRecord],
+    gate_private_jwk: SigningKey,
+    *,
+    ts: str,
+    sig_kid: str | None = None,
+) -> Checkpoint:
+    root = merkle_root([r.hash for r in records])
+    body: dict[str, Any] = {"seq": len(records), "root": root, "ts": ts}
+    if sig_kid is not None:
+        body["sigKid"] = sig_kid
+    sig = _sign_hash(sha256_hex(canonical_json(body)), gate_private_jwk)
+    return Checkpoint.model_validate({**body, "sig": sig})
+
+
+def verify_checkpoint(
+    checkpoint: Checkpoint,
+    records: list[AuditRecord],
+    gate_public_jwk: VerifyKey | dict[str, VerifyKey],
+) -> bool:
+    """A checkpoint holds iff its root equals the recomputed root over the
+    first `seq` records and its signature verifies under its kid."""
+    if checkpoint.seq > len(records):
+        return False
+    if merkle_root([r.hash for r in records[: checkpoint.seq]]) != checkpoint.root:
+        return False
+    body = checkpoint.model_dump(mode="json", exclude_none=True)
+    body.pop("sig")
+    if _is_jwks_mapping(gate_public_jwk):
+        candidate = gate_public_jwk.get(checkpoint.sigKid)  # type: ignore[union-attr]
+        key = _coerce_verify_key(candidate) if candidate is not None else None
+    else:
+        key = _coerce_verify_key(gate_public_jwk)  # type: ignore[arg-type]
+    if key is None:
+        return False
+    return _verify_hash_signature(sha256_hex(canonical_json(body)), checkpoint.sig, key)

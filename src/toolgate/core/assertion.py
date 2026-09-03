@@ -109,12 +109,21 @@ def access_token_hash(token: str) -> str:
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
 
 
+def content_digest(body: bytes | str) -> str:
+    """Proof v2 `cd` claim: base64url(SHA-256(raw request body)). Binding the
+    proof to the exact bytes sent closes body substitution — a captured proof
+    cannot authorize a different payload."""
+    data = body.encode() if isinstance(body, str) else body
+    return base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+
+
 def sign_pop_proof(
     agent_private_jwk: KeyLike,
     *,
     htm: str,
     htu: str,
     access_token: str,
+    body: bytes | str | None = None,
 ) -> str:
     key = to_jwk(agent_private_jwk)
     if isinstance(agent_private_jwk, dict):
@@ -122,19 +131,22 @@ def sign_pop_proof(
     else:
         exported: dict[str, Any] = json.loads(key.export_public())
         header_jwk = {k: exported[k] for k in ("kty", "crv", "x")}
+    claims: dict[str, Any] = {
+        "htm": htm.upper(),
+        "htu": htu,
+        "ath": access_token_hash(access_token),
+        "iat": int(time.time()),
+        "jti": secrets.token_urlsafe(12),
+    }
+    if body is not None:
+        claims["cd"] = content_digest(body)
     token = jwt.JWT(
         header={
             "alg": "EdDSA",
             "typ": POP_PROOF_TYP,
             "jwk": header_jwk,
         },
-        claims={
-            "htm": htm.upper(),
-            "htu": htu,
-            "ath": access_token_hash(access_token),
-            "iat": int(time.time()),
-            "jti": secrets.token_urlsafe(12),
-        },
+        claims=claims,
     )
     token.make_signed_token(key)
     return token.serialize()
@@ -153,6 +165,8 @@ def verify_pop_proof(
     htm: str,
     htu: str,
     access_token: str,
+    body: bytes | str | None = None,
+    require_body_binding: bool = False,
 ) -> VerifiedPopProof:
     try:
         signature = jws.JWS()
@@ -192,6 +206,18 @@ def verify_pop_proof(
             raise ValueError("ath mismatch")
         if not isinstance(payload.get("jti"), str):
             raise ValueError("missing jti")
+
+        # Body binding (proof v2). When the request carries a body, a `cd`
+        # claim must be present (if required) and must match the exact bytes.
+        if body is not None:
+            cd = payload.get("cd")
+            if cd is None:
+                if require_body_binding:
+                    raise ValueError("proof missing cd (body binding required)")
+            elif cd != content_digest(body):
+                raise ValueError("cd mismatch: proof does not cover this body")
+        elif payload.get("cd") is not None:
+            raise ValueError("proof carries cd but request has no body")
 
         return VerifiedPopProof(jti=payload["jti"], jkt=jkt)
     except ToolgateError:

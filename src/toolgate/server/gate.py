@@ -26,7 +26,7 @@ from toolgate.core import (
     decide,
     hash_args,
     new_id,
-    verify_capability_token,
+    verify_capability_token_any,
     verify_pop_proof,
 )
 
@@ -62,8 +62,13 @@ def gate_router(ctx: AppContext) -> APIRouter:
         upstream, tool_def = _resolve_tool(ctx, claims.tenant, upstream_name, body.tool)
 
         call_id = new_id("call")
+        tainted = ctx.store.is_txn_tainted(claims.txn)
         call = ToolCallContext(
-            upstream=upstream_name, tool=body.tool, args=body.args, cost_units=tool_def.costUnits
+            upstream=upstream_name,
+            tool=body.tool,
+            args=body.args,
+            cost_units=tool_def.costUnits,
+            tainted=tainted,
         )
         policy = ctx.store.get_policy(grant.policyId)
         if not policy:
@@ -136,6 +141,7 @@ def gate_router(ctx: AppContext) -> APIRouter:
 
         result = await _execute_call(
             ctx,
+            txn=claims.txn,
             actor=actor,
             action=action,
             decision=_to_audit_decision(decision),
@@ -208,6 +214,7 @@ def gate_router(ctx: AppContext) -> APIRouter:
         try:
             result = await _execute_call(
                 ctx,
+                txn=claims.txn,
                 actor=actor,
                 action=action,
                 decision=decision,
@@ -240,8 +247,8 @@ async def _authenticate_token_only(ctx: AppContext, request: Request) -> AuthedC
     if not auth.lower().startswith("bearer "):
         raise ToolgateError(ErrorCodes.TOKEN_INVALID, "missing bearer capability token")
     token = auth[7:].strip()
-    claims = verify_capability_token(
-        ctx.control_verify_jwk,
+    claims = verify_capability_token_any(
+        ctx.control_verify_jwks,
         token,
         issuer=ctx.config.issuer,
         audience=ctx.config.gate_audience,
@@ -268,12 +275,15 @@ async def _authenticate(ctx: AppContext, request: Request, path: str) -> AuthedC
         raise ToolgateError(ErrorCodes.PROOF_INVALID, "missing x-toolgate-proof header")
 
     token = request.headers.get("authorization", "")[7:].strip()
+    raw_body = await request.body()
     verified = verify_pop_proof(
         proof,
         expected_jkt=authed.claims.cnf.jkt,
         htm=request.method,
         htu=f"{ctx.config.public_url}{path}",
         access_token=token,
+        body=raw_body if raw_body else None,
+        require_body_binding=ctx.config.require_body_proofs,
     )
     if not ctx.store.consume_jti(verified.jti, "proof", 120):
         raise ToolgateError(ErrorCodes.PROOF_INVALID, "proof replayed")
@@ -308,6 +318,7 @@ def _require_approval(
 async def _execute_call(
     ctx: AppContext,
     *,
+    txn: str,
     actor: AuditActor,
     action: AuditAction,
     decision: AuditDecision,
@@ -390,6 +401,10 @@ async def _execute_call(
             costUnits=tool_def.costUnits,
         )
     )
+    if tool_def.contentTrust == "untrusted_source":
+        # The task has now consumed attacker-influenced content: taint the txn
+        # so when.txnTouchedUntrusted policies react for the rest of the task.
+        ctx.store.mark_txn_tainted(txn)
     return body
 
 

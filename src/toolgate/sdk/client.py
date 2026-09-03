@@ -1,3 +1,4 @@
+import json
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -160,15 +161,20 @@ class ToolgateClient:
 
     def _signed_post(self, path: str, body: dict[str, Any] | None) -> httpx.Response:
         grant = self.token()
+        # Serialize once and sign the exact bytes that go on the wire: the
+        # proof's cd claim binds this specific payload (proof v2).
+        body_bytes = json.dumps(body).encode() if body is not None else None
         proof = sign_pop_proof(
             self._agent_private_jwk,
             htm="POST",
             htu=f"{self._base_url}{path}",
             access_token=grant.access_token,
+            body=body_bytes,
         )
         headers = {"authorization": f"Bearer {grant.access_token}", "x-toolgate-proof": proof}
-        if body is not None:
-            return self._http.post(f"{self._base_url}{path}", headers=headers, json=body)
+        if body_bytes is not None:
+            headers["content-type"] = "application/json"
+            return self._http.post(f"{self._base_url}{path}", headers=headers, content=body_bytes)
         return self._http.post(f"{self._base_url}{path}", headers=headers)
 
 

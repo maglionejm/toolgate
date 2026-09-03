@@ -160,9 +160,9 @@ def test_audit_verify_server_and_offline(env: Env) -> None:
     assert offline["valid"] is True
 
     # Tamper with the export: offline verification must name the breakpoint.
-    records = json.loads(export_file.read_text())
-    records[0]["decision"]["reason"] = "cover-up"
-    export_file.write_text(json.dumps(records))
+    bundle = json.loads(export_file.read_text())
+    bundle["records"][0]["decision"]["reason"] = "cover-up"
+    export_file.write_text(json.dumps(bundle))
     broken = env.run_json("audit", "verify", "--file", str(export_file), expect=2)
     assert broken["valid"] is False and broken["broken_at_seq"] == 1
 

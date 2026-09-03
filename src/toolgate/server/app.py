@@ -61,8 +61,13 @@ def create_app(ctx: AppContext) -> FastAPI:
         return {
             "issuer": ctx.config.issuer,
             "gate_audience": ctx.config.gate_audience,
+            "proof_versions": [2],
+            # Newest keys (compat with pre-rotation clients)...
             "control": ctx.control_keys.public_jwk,
             "gate": ctx.gate_keys.public_jwk,
+            # ...and the full rotation keysets for kid-aware verifiers.
+            "control_jwks": {"keys": [k.public_jwk for k in ctx.control_keyset]},
+            "gate_jwks": {"keys": [k.public_jwk for k in ctx.gate_keyset]},
         }
 
     app.include_router(control_router(ctx))

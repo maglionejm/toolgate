@@ -1,3 +1,4 @@
+import base64
 import json
 import secrets
 import time
@@ -96,6 +97,42 @@ def mint_capability_token(
         txn=txn,
         expires_at=datetime.fromtimestamp(exp, tz=UTC),
     )
+
+
+def verify_capability_token_any(
+    control_jwks: dict[str, KeyLike],
+    token: str,
+    *,
+    issuer: str,
+    audience: str,
+    clock_tolerance_seconds: int = 0,
+) -> CapabilityClaims:
+    """Verify against a rotation keyset: select the key by the (unverified)
+    header kid, falling back to trying every key so tokens minted just before
+    a rotation stay valid through their short TTL."""
+    kid: str | None = None
+    try:
+        head = token.split(".")[0]
+        kid = json.loads(base64.urlsafe_b64decode(head + "=" * (-len(head) % 4))).get("kid")
+    except Exception:  # noqa: BLE001 — malformed headers fail in the real verify below
+        kid = None
+
+    candidates = [control_jwks[kid]] if kid in control_jwks else list(control_jwks.values())
+    last_error: ToolgateError | None = None
+    for key in candidates:
+        try:
+            return verify_capability_token(
+                key,
+                token,
+                issuer=issuer,
+                audience=audience,
+                clock_tolerance_seconds=clock_tolerance_seconds,
+            )
+        except ToolgateError as err:
+            if err.code == ErrorCodes.TOKEN_EXPIRED:
+                raise
+            last_error = err
+    raise last_error or ToolgateError(ErrorCodes.TOKEN_INVALID, "no verification key available")
 
 
 def verify_capability_token(
