@@ -83,7 +83,7 @@ Security properties: a stolen token is inert (PoP), a stolen token+key pair is b
 `ApprovalRequest = parked call bound to args hash`
 `AuditRecord = hash-chained, signed; verifiable as a chain`
 
-Persistence: SQLite (`node:sqlite`) behind a thin store interface — swap for Postgres without touching domain logic.
+Persistence: SQLite (stdlib `sqlite3`) behind a thin store interface — swap for Postgres without touching domain logic. Runtime: Python/FastAPI (ADR 0005; originally Node/Hono per ADR 0003).
 
 ## Threat model (abridged)
 
