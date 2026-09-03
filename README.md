@@ -2,6 +2,12 @@
 
 **The capability control plane for embedded AI agents.**
 
+[![CI](https://github.com/maglionejm/toolgate/actions/workflows/ci.yml/badge.svg)](https://github.com/maglionejm/toolgate/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-c8f169)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-8b96a1)](pyproject.toml)
+
+**Portal & live simulation: [maglionejm.github.io/toolgate](https://maglionejm.github.io/toolgate/)** — try the gate and tamper with a real hash chain in your browser.
+
 Agents should never hold credentials — not the user's OAuth token, not a tenant API key, not anything. Toolgate sits between agents and the tools they call:
 
 - the agent authenticates with **its own Ed25519 key** and a **delegation grant** from a human;
@@ -99,3 +105,11 @@ uv run toolgate-server      # standalone server (prints the admin key on first b
 ```
 
 Production env vars: `TOOLGATE_MASTER_KEY`, `TOOLGATE_ADMIN_KEY`, `TOOLGATE_PUBLIC_URL`, `TOOLGATE_DB`, `PORT`.
+
+## Contributing & security
+
+Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security findings go through [private vulnerability reporting](SECURITY.md), never public issues.
+
+## License
+
+[Apache License 2.0](LICENSE) © 2026 Juan Martin Maglione. Toolgate is early-stage software (pre-1.0): the wire format is a compatibility surface we take seriously, but expect movement before 1.0.
