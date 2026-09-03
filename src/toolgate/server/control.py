@@ -532,6 +532,75 @@ def control_router(ctx: AppContext) -> APIRouter:
             out["reason"] = v.reason
         return out
 
+    @router.get("/reports", dependencies=auditor_dep)
+    async def usage_report(tenantId: Annotated[str, Query()]) -> dict[str, Any]:
+        """Usage rollup derived entirely from the signed audit chain — the same
+        records a third party can verify offline back this report."""
+        records = [
+            r for r in ctx.store.list_audit(tenantId) if r.action.upstream != "control"
+        ]
+        totals = {"calls": 0, "executed": 0, "denied": 0, "pendingApproval": 0,
+                  "errors": 0, "costUnits": 0}
+        by_agent: dict[str, dict[str, int]] = {}
+        by_tool: dict[str, dict[str, int]] = {}
+        pending_ts: dict[str, str] = {}
+        decision_latencies: list[float] = []
+
+        for r in records:
+            totals["calls"] += 1
+            status = r.result.status
+            if status == "executed":
+                totals["executed"] += 1
+                totals["costUnits"] += r.result.costUnits or 0
+            elif status == "denied":
+                totals["denied"] += 1
+            elif status == "pending_approval":
+                totals["pendingApproval"] += 1
+                pending_ts[r.action.callId] = r.ts
+            elif status == "error":
+                totals["errors"] += 1
+
+            agent = by_agent.setdefault(
+                r.actor.agentId, {"calls": 0, "executed": 0, "denied": 0, "costUnits": 0}
+            )
+            agent["calls"] += 1
+            tool = by_tool.setdefault(
+                f"{r.action.upstream}.{r.action.tool}",
+                {"calls": 0, "executed": 0, "denied": 0, "costUnits": 0},
+            )
+            tool["calls"] += 1
+            if status == "executed":
+                agent["executed"] += 1
+                agent["costUnits"] += r.result.costUnits or 0
+                tool["executed"] += 1
+                tool["costUnits"] += r.result.costUnits or 0
+                started = pending_ts.get(r.action.callId)
+                if started:
+                    delta = (
+                        datetime.fromisoformat(r.ts) - datetime.fromisoformat(started)
+                    ).total_seconds()
+                    decision_latencies.append(delta)
+            elif status == "denied":
+                agent["denied"] += 1
+                tool["denied"] += 1
+
+        approvals = {
+            "requested": totals["pendingApproval"],
+            "executedAfterApproval": len(decision_latencies),
+            "avgApprovalToExecuteSeconds": (
+                round(sum(decision_latencies) / len(decision_latencies), 2)
+                if decision_latencies
+                else None
+            ),
+        }
+        return {
+            "tenantId": tenantId,
+            "totals": totals,
+            "byAgent": [{"agentId": k, **v} for k, v in sorted(by_agent.items())],
+            "byTool": [{"tool": k, **v} for k, v in sorted(by_tool.items())],
+            "approvals": approvals,
+        }
+
     @router.post("/operators", status_code=201, dependencies=owner_dep)
     async def create_operator(body: CreateOperator, request: Request) -> dict[str, Any]:
         key = f"opk_{_secrets.token_urlsafe(24)}"

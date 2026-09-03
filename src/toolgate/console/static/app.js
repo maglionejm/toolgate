@@ -78,6 +78,7 @@ async function render() {
   } else if (view === "audit") await renderAudit();
   else if (view === "grants") await renderGrants();
   else if (view === "simulator") await loadPolicies();
+  else if (view === "reports") await renderReports();
 }
 
 /* ---------- approvals inbox ---------- */
@@ -172,6 +173,25 @@ $("grants-table").addEventListener("click", async (e) => {
   await api(`/v1/control/grants/${btn.dataset.grant}/revoke`, {});
   await renderGrants();
 });
+
+/* ---------- reports ---------- */
+
+async function renderReports() {
+  const r = await api(`/v1/control/reports?tenantId=${tenantId()}`);
+  const t = r.totals;
+  $("report-tiles").innerHTML = [
+    ["calls", t.calls], ["executed", t.executed], ["denied", t.denied],
+    ["parked", t.pendingApproval], ["cost units", t.costUnits],
+  ]
+    .map(([k, v]) => `<div class="tile"><b>${v}</b><span>${k}</span></div>`)
+    .join("");
+  $("report-table").querySelector("tbody").innerHTML = r.byTool
+    .map(
+      (x) => `<tr><td>${esc(x.tool)}</td><td>${x.calls}</td><td>${x.executed}</td>
+        <td class="${x.denied ? "fx-deny" : ""}">${x.denied}</td><td>${x.costUnits}</td></tr>`
+    )
+    .join("");
+}
 
 /* ---------- simulator ---------- */
 

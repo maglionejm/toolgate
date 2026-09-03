@@ -74,3 +74,8 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .sim-verdict.v-allow { border-color: var(--allow); color: var(--allow); }
 .sim-verdict.v-deny { border-color: var(--deny); color: var(--deny); }
 .sim-verdict.v-require_approval { border-color: var(--approve); color: var(--approve); }
+
+.tiles { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.tile { border: 1px solid var(--line); background: var(--panel); padding: 14px 20px; min-width: 110px; }
+.tile b { display: block; font-family: var(--mono); font-size: 22px; color: var(--accent); }
+.tile span { font-size: 11px; color: var(--faint); text-transform: uppercase; letter-spacing: .1em; }
