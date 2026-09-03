@@ -1,6 +1,6 @@
 # Token Specification
 
-> Toolgate 0.3 · Last updated 2026-09-03 · Normative for interoperating implementations
+> Toolgate 0.4 · Last updated 2026-09-12 · Normative for interoperating implementations
 
 Toolgate uses three signed artifacts, all EdDSA (Ed25519) JWS with distinct `typ` headers so they can never be confused for one another.
 
@@ -69,6 +69,7 @@ One per gate call, following RFC 9449's model (DPoP), hand-implemented because n
 | `htm` | HTTP method, uppercased |
 | `htu` | Exact request URL (`TOOLGATE_PUBLIC_URL` + path) |
 | `ath` | base64url(SHA-256(capability token)) — binds proof to one specific token |
+| `cd` | **v2** base64url(SHA-256(raw request body)) — binds the proof to the exact payload bytes; required whenever the request has a body |
 | `iat` | Freshness: rejected if older than 60s or more than 5s in the future |
 | `jti` | **Single-use**, enforced by the gate's consumed-jti store |
 
@@ -78,7 +79,10 @@ One per gate call, following RFC 9449's model (DPoP), hand-implemented because n
 2. Thumbprint(header.jwk) must equal token `cnf.jkt`.
 3. Verify JWS signature with the embedded key.
 4. Check `htm`, `htu`, `ath`, `iat` window.
-5. Consume `jti`; reuse → `TG_PROOF_INVALID`.
+5. **v2:** when the request carries a body, `cd` must be present and match the exact bytes; a `cd` on a body-less request is rejected.
+6. Consume `jti`; reuse → `TG_PROOF_INVALID`.
+
+The MCP surface (`/v1/mcp`) is the sole PoP-exempt path — see ADR 0009.
 
 ## 4. Audit record
 
@@ -100,4 +104,9 @@ Append-only chain; each record:
 - `argsHash` = SHA-256 of canonically serialized args: proves *what* was requested without persisting payloads.
 - Canonical JSON: recursively sorted keys, compact separators, absent fields dropped.
 - Chain verification detects content edits, record removal, reordering, and foreign signatures; genesis `prevHash` is 64 zeros.
-- `decision.source` ∈ `token_bounds | rule | constraint | budget | approval | default`.
+- `decision.source` ∈ `token_bounds | rule | constraint | budget | approval | default | operator` (`operator` = attributed control-plane mutations).
+- Records may carry `sigKid` (the gate kid that signed them) and `meta` (structured extras). **Rotation lineage:** a `gate-key-rotation` record signed under a trusted kid introduces `meta.newKid`; verifiers trust only the first record's kid a priori and extend trust along handoffs.
+
+## 5. Checkpoints
+
+`{ seq, root, ts, sigKid?, sig }` — `root` is an RFC 6962-style Merkle root over the first `seq` record hashes (leaf = SHA-256(0x00‖hash), node = SHA-256(0x01‖l‖r), odd nodes promoted); `sig` is Ed25519 over SHA-256 of the canonical body. Checkpoints are cut every `checkpoint_interval` records, on rotation, and on demand; they ship in the audit bundle and are optionally POSTed to `TOOLGATE_ANCHOR_URL`. A checkpoint that no longer matches the recomputed root proves history rewriting even to a party that distrusts every current gate key.

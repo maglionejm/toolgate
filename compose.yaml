@@ -1,0 +1,22 @@
+# Local/self-hosted Toolgate. Generate real keys first:
+#   export TOOLGATE_MASTER_KEY=$(openssl rand -base64 32)
+#   export TOOLGATE_ADMIN_KEY=$(openssl rand -hex 24)
+# then: docker compose up
+services:
+  toolgate:
+    build: .
+    image: ghcr.io/maglionejm/toolgate:latest
+    ports:
+      - "8484:8484"
+    environment:
+      TOOLGATE_HOST: 0.0.0.0
+      TOOLGATE_MASTER_KEY: ${TOOLGATE_MASTER_KEY:?set TOOLGATE_MASTER_KEY}
+      TOOLGATE_ADMIN_KEY: ${TOOLGATE_ADMIN_KEY:?set TOOLGATE_ADMIN_KEY}
+      TOOLGATE_PUBLIC_URL: ${TOOLGATE_PUBLIC_URL:-http://localhost:8484}
+      TOOLGATE_ANCHOR_URL: ${TOOLGATE_ANCHOR_URL:-}
+    volumes:
+      - toolgate-data:/data
+    restart: unless-stopped
+
+volumes:
+  toolgate-data:
