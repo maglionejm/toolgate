@@ -13,6 +13,7 @@ from toolgate.core import (
     ApprovalRequest,
     AuditRecord,
     Budget,
+    Checkpoint,
     DelegationGrant,
     Policy,
     Tenant,
@@ -51,6 +52,14 @@ CREATE TABLE IF NOT EXISTS audit (
     seq INTEGER PRIMARY KEY,
     tenant_id TEXT NOT NULL,
     json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS checkpoints (
+    seq INTEGER PRIMARY KEY,
+    json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS txn_taint (
+    txn TEXT PRIMARY KEY,
+    expires_at INTEGER NOT NULL
 );
 """
 
@@ -328,6 +337,37 @@ class Store:
         else:
             rows = self.db.execute("SELECT json FROM audit ORDER BY seq").fetchall()
         return [AuditRecord.model_validate(json.loads(r[0])) for r in rows]
+
+    # -- checkpoints ---------------------------------------------------------------
+
+    def put_checkpoint(self, cp: Checkpoint) -> None:
+        self.db.execute(
+            "INSERT INTO checkpoints (seq, json) VALUES (?, ?) "
+            "ON CONFLICT(seq) DO UPDATE SET json = excluded.json",
+            (cp.seq, json.dumps(cp.model_dump(mode="json", exclude_none=True))),
+        )
+
+    def list_checkpoints(self) -> list[Checkpoint]:
+        rows = self.db.execute("SELECT json FROM checkpoints ORDER BY seq").fetchall()
+        return [Checkpoint.model_validate(json.loads(r[0])) for r in rows]
+
+    # -- txn taint -------------------------------------------------------------------
+
+    def mark_txn_tainted(self, txn: str, ttl_seconds: int = 86_400) -> None:
+        """The task behind this txn consumed untrusted content; policies with
+        when.txnTouchedUntrusted react to it for the rest of the task."""
+        expires = int(time.time() * 1000) + ttl_seconds * 1000
+        self.db.execute(
+            "INSERT INTO txn_taint (txn, expires_at) VALUES (?, ?) "
+            "ON CONFLICT(txn) DO UPDATE SET expires_at = excluded.expires_at",
+            (txn, expires),
+        )
+
+    def is_txn_tainted(self, txn: str) -> bool:
+        row = self.db.execute(
+            "SELECT expires_at FROM txn_taint WHERE txn = ?", (txn,)
+        ).fetchone()
+        return bool(row and row[0] > int(time.time() * 1000))
 
     def close(self) -> None:
         self.db.close()

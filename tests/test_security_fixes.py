@@ -121,17 +121,23 @@ def _authed_env():
 
     path = "/v1/gate/call/email"
 
-    def _headers():
+    def _headers(body: bytes | None = None):
         proof = sign_pop_proof(
-            agent_keys.private_jwk, htm="POST", htu=f"{PUBLIC_URL}{path}", access_token=token
+            agent_keys.private_jwk,
+            htm="POST",
+            htu=f"{PUBLIC_URL}{path}",
+            access_token=token,
+            body=body,
         )
         return {"authorization": f"Bearer {token}", "x-toolgate-proof": proof}
 
     def call(args: dict):
-        return client.post(path, headers=_headers(), json={"tool": "send_email", "args": args})
+        body = json.dumps({"tool": "send_email", "args": args}).encode()
+        headers = {**_headers(body), "content-type": "application/json"}
+        return client.post(path, headers=headers, content=body)
 
     def raw_call(body: str):
-        headers = {**_headers(), "content-type": "application/json"}
+        headers = {**_headers(body.encode()), "content-type": "application/json"}
         return client.post(path, headers=headers, content=body)
 
     return ctx, call, raw_call
@@ -465,13 +471,22 @@ def test_cross_tenant_upstream_is_unreachable():
     ).json()["access_token"]
 
     path = "/v1/gate/call/secretcrm"
+    body = json.dumps({"tool": "read", "args": {}}).encode()
     proof = sign_pop_proof(
-        agent_keys.private_jwk, htm="POST", htu=f"{PUBLIC_URL}{path}", access_token=token
+        agent_keys.private_jwk,
+        htm="POST",
+        htu=f"{PUBLIC_URL}{path}",
+        access_token=token,
+        body=body,
     )
     r = client.post(
         path,
-        headers={"authorization": f"Bearer {token}", "x-toolgate-proof": proof},
-        json={"tool": "read", "args": {}},
+        headers={
+            "authorization": f"Bearer {token}",
+            "x-toolgate-proof": proof,
+            "content-type": "application/json",
+        },
+        content=body,
     )
     # Upstream resolution is scoped to the token's tenant, so B's upstream is
     # invisible to A — no cross-tenant credential use.
@@ -605,13 +620,22 @@ def test_h1_concurrent_approval_execution_is_single_shot():
             )["access_token"]
 
             call_path = "/v1/gate/call/email"
+            call_body = json.dumps({"tool": "send_email", "args": {"to": "v@x.com"}}).encode()
             proof = sign_pop_proof(
-                agent_keys.private_jwk, htm="POST", htu=f"{PUBLIC_URL}{call_path}", access_token=tok
+                agent_keys.private_jwk,
+                htm="POST",
+                htu=f"{PUBLIC_URL}{call_path}",
+                access_token=tok,
+                body=call_body,
             )
             r = await c.post(
                 call_path,
-                headers={"authorization": f"Bearer {tok}", "x-toolgate-proof": proof},
-                json={"tool": "send_email", "args": {"to": "v@x.com"}},
+                headers={
+                    "authorization": f"Bearer {tok}",
+                    "x-toolgate-proof": proof,
+                    "content-type": "application/json",
+                },
+                content=call_body,
             )
             approval_id = r.json()["approval_id"]
             await post(

@@ -18,6 +18,12 @@ class ToolDef(BaseModel):
     sideEffecting: bool = False
     # Abstract cost of one invocation, charged against the grant budget.
     costUnits: int = Field(default=1, ge=0)
+    # Tools that return attacker-influenced content (web pages, inbound email)
+    # taint the task; policies can then gate side effects in tainted tasks.
+    contentTrust: Literal["trusted", "untrusted_source"] = "trusted"
+    # Optional JSON Schema for the tool arguments (surfaced to MCP clients and
+    # framework adapters; not enforced by the gate).
+    argsSchema: dict[str, Any] | None = None
 
 
 class BearerCredential(BaseModel):
@@ -152,11 +158,20 @@ class RuleConstraints(BaseModel):
     maxCostUnits: int | None = Field(default=None, gt=0)
 
 
+class RuleWhen(BaseModel):
+    # Task-state predicate: the rule only matches when the current transaction
+    # has (True) / has not (False) touched an untrusted-content tool. This is
+    # the structural lethal-trifecta defense — e.g. "email is allowed, but not
+    # in a task that has read untrusted content, unless a human approves".
+    txnTouchedUntrusted: bool | None = None
+
+
 class PolicyRule(BaseModel):
     id: str | None = None
     description: str | None = None
     effect: Literal["allow", "deny", "require_approval"]
     match: RuleMatch
+    when: RuleWhen | None = None
     constraints: RuleConstraints | None = None
 
 
@@ -277,10 +292,29 @@ class AuditRecordInput(BaseModel):
     action: AuditAction
     decision: AuditDecision
     result: AuditResult
+    # Structured extras (e.g. key-rotation handoffs carry {"newKid": ...}).
+    # Optional and dropped when absent, so legacy record hashes are unchanged.
+    meta: dict[str, Any] | None = None
 
 
 class AuditRecord(AuditRecordInput):
     seq: int = Field(gt=0)
     prevHash: str
     hash: str
+    sig: str
+    # kid of the gate key that signed this record; absent on legacy records
+    # (verified against the root key). A new kid is only trusted after a
+    # handoff record signed by a previously-trusted kid names it in meta.newKid.
+    sigKid: str | None = None
+
+
+class Checkpoint(BaseModel):
+    """A signed Merkle commitment over the first `seq` audit records. Anchoring
+    checkpoints externally makes history rewriting detectable even if the gate
+    signing key is later compromised."""
+
+    seq: int = Field(gt=0)
+    root: str
+    ts: str
+    sigKid: str | None = None
     sig: str

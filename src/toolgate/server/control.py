@@ -129,6 +129,10 @@ class DecideApproval(BaseModel):
     decidedBy: str = Field(min_length=1)
 
 
+class RotateKeys(BaseModel):
+    plane: Literal["control", "gate"]
+
+
 class TokenRequest(BaseModel):
     grant_type: Literal["urn:ietf:params:oauth:grant-type:token-exchange"]
     client_assertion: str = Field(min_length=1)
@@ -354,10 +358,53 @@ def control_router(ctx: AppContext) -> APIRouter:
             r.model_dump(mode="json", exclude_none=True) for r in ctx.store.list_audit(tenantId)
         ]
 
+    @router.post("/keys/rotate", dependencies=admin_dep)
+    async def rotate_keys(body: RotateKeys) -> dict[str, Any]:
+        if body.plane == "control":
+            new = ctx.rotate_control_key()
+        else:
+            new = ctx.rotate_gate_key(rotated_by="admin")
+        return {"plane": body.plane, "kid": new.kid}
+
+    @router.post("/audit/checkpoint", dependencies=admin_dep)
+    async def cut_checkpoint() -> dict[str, Any]:
+        cp = ctx.audit.checkpoint()
+        return cp.model_dump(mode="json", exclude_none=True)
+
+    @router.get("/audit/checkpoints", dependencies=admin_dep)
+    async def list_checkpoints() -> list[dict[str, Any]]:
+        return [
+            c.model_dump(mode="json", exclude_none=True) for c in ctx.store.list_checkpoints()
+        ]
+
+    @router.get("/audit/bundle", dependencies=admin_dep)
+    async def audit_bundle(
+        tenantId: Annotated[str | None, Query()] = None,
+    ) -> dict[str, Any]:
+        """Records + checkpoints in one export. Offline verification needs the
+        FULL chain, so tenant filtering applies to `records` only when asked —
+        the default export is complete."""
+        return {
+            "records": [
+                r.model_dump(mode="json", exclude_none=True)
+                for r in ctx.store.list_audit(tenantId)
+            ],
+            "checkpoints": [
+                c.model_dump(mode="json", exclude_none=True)
+                for c in ctx.store.list_checkpoints()
+            ],
+        }
+
     @router.get("/audit/verify", dependencies=admin_dep)
     async def verify_audit() -> dict[str, Any]:
         v = ctx.audit.verify()
-        out: dict[str, Any] = {"valid": v.valid, "length": v.length}
+        cp_valid, cp_total = ctx.audit.verify_checkpoints()
+        out: dict[str, Any] = {
+            "valid": v.valid,
+            "length": v.length,
+            "checkpoints_valid": cp_valid,
+            "checkpoints_total": cp_total,
+        }
         if v.broken_at_seq is not None:
             out["broken_at_seq"] = v.broken_at_seq
             out["reason"] = v.reason

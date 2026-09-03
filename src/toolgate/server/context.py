@@ -1,22 +1,33 @@
+import asyncio
 import json
 import os
 import secrets
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 import httpx
 from jwcrypto import jwk
 
 from toolgate.core import (
+    GATE_KEY_ROTATION_TOOL,
+    AuditAction,
+    AuditActor,
+    AuditDecision,
     AuditRecord,
     AuditRecordInput,
+    AuditResult,
     ChainVerification,
+    Checkpoint,
     KeyPairJwk,
     append_audit_record,
     generate_ed25519_key_pair,
+    hash_args,
+    make_checkpoint,
+    new_id,
     signing_key_from_jwk,
     to_jwk,
     verify_audit_chain,
-    verify_key_from_jwk,
+    verify_checkpoint,
 )
 
 from .ratelimit import SlidingWindowLimiter
@@ -42,24 +53,121 @@ class ServerConfig:
     # When False (production), upstream baseUrls must be https (or loopback http).
     # Dev/tests set this True so local http mock upstreams keep working.
     allow_insecure_upstreams: bool = False
+    # Proof v2: gate calls carrying a body must bind it (cd claim).
+    require_body_proofs: bool = True
+    # A signed Merkle checkpoint is cut automatically every N audit records.
+    checkpoint_interval: int = 64
+    # Optional external witness: each checkpoint is POSTed here (fire-and-forget).
+    anchor_url: str | None = None
 
 
 class AuditLog:
-    def __init__(self, store: Store, gate_keys: KeyPairJwk) -> None:
+    """Signs every record with the *current* gate key and tracks kid lineage.
+
+    Rotation appends a handoff record signed by the OLD key whose meta names
+    the new kid — verifiers extend trust along that chain, never on the
+    server's say-so. Checkpoints are cut every `checkpoint_interval` records
+    and optionally POSTed to an external anchor."""
+
+    def __init__(
+        self,
+        store: Store,
+        gate_keyset: list[KeyPairJwk],
+        *,
+        checkpoint_interval: int = 64,
+        anchor_url: str | None = None,
+        http: httpx.AsyncClient | None = None,
+    ) -> None:
         self._store = store
-        # Every gate decision signs a record: parse the Ed25519 keys once.
-        self._signing_key = signing_key_from_jwk(gate_keys.private_jwk)
-        self._verify_key = verify_key_from_jwk(gate_keys.public_jwk)
+        self._keyset = gate_keyset  # newest first
+        self._signing_key = signing_key_from_jwk(gate_keyset[0].private_jwk)
+        self._sig_kid: str = gate_keyset[0].kid
         self._last: AuditRecord | None = store.last_audit()
+        self._checkpoint_interval = checkpoint_interval
+        self._anchor_url = anchor_url
+        self._http = http
+
+    @property
+    def current_kid(self) -> str:
+        return self._sig_kid
+
+    def verify_jwks(self) -> dict[str, dict]:
+        return {k.kid: k.public_jwk for k in self._keyset}
 
     def record(self, record_input: AuditRecordInput) -> AuditRecord:
-        record = append_audit_record(self._last, record_input, self._signing_key)
+        record = append_audit_record(
+            self._last, record_input, self._signing_key, sig_kid=self._sig_kid
+        )
         self._store.append_audit(record)
         self._last = record
+        if record.seq % self._checkpoint_interval == 0:
+            self.checkpoint()
+        return record
+
+    def checkpoint(self) -> Checkpoint:
+        records = self._store.list_audit()
+        cp = make_checkpoint(
+            records,
+            self._signing_key,
+            ts=datetime.now(UTC).isoformat(),
+            sig_kid=self._sig_kid,
+        )
+        self._store.put_checkpoint(cp)
+        self._anchor(cp)
+        return cp
+
+    def _anchor(self, cp: Checkpoint) -> None:
+        if not (self._anchor_url and self._http):
+            return
+        payload = cp.model_dump(mode="json", exclude_none=True)
+
+        async def post() -> None:
+            try:
+                await self._http.post(self._anchor_url, json=payload)  # type: ignore[arg-type]
+            except httpx.HTTPError as err:
+                print(f"[toolgate] anchor POST failed (checkpoint seq {cp.seq}): {err}")
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # no loop (tests/CLI paths): anchoring is best-effort
+        loop.create_task(post())
+
+    def rotate(self, new_keys: KeyPairJwk, *, rotated_by: str) -> AuditRecord:
+        """Handoff signed by the OLD key naming the new kid, then switch."""
+        handoff = AuditRecordInput(
+            id=new_id("evt"),
+            tenantId="-",
+            ts=datetime.now(UTC).isoformat(),
+            actor=AuditActor(agentId="control-plane", userId=rotated_by, grantId="-", tokenJti="-"),
+            action=AuditAction(
+                callId=new_id("call"),
+                upstream="control",
+                tool=GATE_KEY_ROTATION_TOOL,
+                argsHash=hash_args(new_keys.public_jwk),
+            ),
+            decision=AuditDecision(
+                effect="allow", source="approval", reason=f"gate key rotated to {new_keys.kid}"
+            ),
+            result=AuditResult(status="executed"),
+            meta={"newKid": new_keys.kid},
+        )
+        record = self.record(handoff)
+        self._keyset.insert(0, new_keys)
+        self._signing_key = signing_key_from_jwk(new_keys.private_jwk)
+        self._sig_kid = new_keys.kid
+        self.checkpoint()
         return record
 
     def verify(self) -> ChainVerification:
-        return verify_audit_chain(self._store.list_audit(), self._verify_key)
+        return verify_audit_chain(self._store.list_audit(), self.verify_jwks())
+
+    def verify_checkpoints(self) -> tuple[int, int]:
+        """(valid, total) across stored checkpoints."""
+        records = self._store.list_audit()
+        cps = self._store.list_checkpoints()
+        valid = sum(1 for cp in cps if verify_checkpoint(cp, records, self.verify_jwks()))
+        return valid, len(cps)
 
 
 @dataclass
@@ -73,26 +181,67 @@ class AppContext:
     # Parsed once at boot; every token mint/verify on the hot path reuses them.
     control_signing_jwk: jwk.JWK
     control_verify_jwk: jwk.JWK
-    token_limiter: SlidingWindowLimiter
-    gate_limiter: SlidingWindowLimiter
+    # Rotation keysets (newest first). Verification accepts any listed kid.
+    control_keyset: list[KeyPairJwk] = field(default_factory=list)
+    gate_keyset: list[KeyPairJwk] = field(default_factory=list)
+    control_verify_jwks: dict[str, dict] = field(default_factory=dict)
+    token_limiter: SlidingWindowLimiter = field(
+        default_factory=lambda: SlidingWindowLimiter(60, 60.0)
+    )
+    gate_limiter: SlidingWindowLimiter = field(
+        default_factory=lambda: SlidingWindowLimiter(300, 60.0)
+    )
     http: httpx.AsyncClient = field(default_factory=httpx.AsyncClient)
 
+    def rotate_control_key(self) -> KeyPairJwk:
+        new_keys = generate_ed25519_key_pair()
+        self.control_keyset.insert(0, new_keys)
+        _persist_keyset(self.store, "control", self.control_keyset)
+        self.control_keys = new_keys
+        self.control_signing_jwk = to_jwk(new_keys.private_jwk)
+        self.control_verify_jwk = to_jwk(new_keys.public_jwk)
+        self.control_verify_jwks[new_keys.kid] = new_keys.public_jwk
+        return new_keys
 
-def _load_or_create_keys(store: Store, name: str) -> KeyPairJwk:
-    existing = store.get_setting(f"keys:{name}")
-    if existing:
-        data = json.loads(existing)
-        return KeyPairJwk(
-            kid=data["kid"], public_jwk=data["public_jwk"], private_jwk=data["private_jwk"]
-        )
-    keys = generate_ed25519_key_pair()
+    def rotate_gate_key(self, *, rotated_by: str) -> KeyPairJwk:
+        new_keys = generate_ed25519_key_pair()
+        self.audit.rotate(new_keys, rotated_by=rotated_by)
+        self.gate_keyset.insert(0, new_keys)
+        _persist_keyset(self.store, "gate", self.gate_keyset)
+        self.gate_keys = new_keys
+        return new_keys
+
+
+def _persist_keyset(store: Store, name: str, keyset: list[KeyPairJwk]) -> None:
     store.set_setting(
-        f"keys:{name}",
+        f"keyset:{name}",
         json.dumps(
-            {"kid": keys.kid, "public_jwk": keys.public_jwk, "private_jwk": keys.private_jwk}
+            [
+                {"kid": k.kid, "public_jwk": k.public_jwk, "private_jwk": k.private_jwk}
+                for k in keyset
+            ]
         ),
     )
-    return keys
+
+
+def _load_or_create_keyset(store: Store, name: str) -> list[KeyPairJwk]:
+    """Newest-first keyset; migrates the legacy single-key `keys:<name>` setting."""
+    existing = store.get_setting(f"keyset:{name}")
+    if existing:
+        return [
+            KeyPairJwk(kid=d["kid"], public_jwk=d["public_jwk"], private_jwk=d["private_jwk"])
+            for d in json.loads(existing)
+        ]
+    legacy = store.get_setting(f"keys:{name}")
+    if legacy:
+        d = json.loads(legacy)
+        keyset = [
+            KeyPairJwk(kid=d["kid"], public_jwk=d["public_jwk"], private_jwk=d["private_jwk"])
+        ]
+    else:
+        keyset = [generate_ed25519_key_pair()]
+    _persist_keyset(store, name, keyset)
+    return keyset
 
 
 def create_app_context(
@@ -103,6 +252,7 @@ def create_app_context(
     admin_key: str | None = None,
     master_key: str | None = None,
     dev_mode: bool = True,
+    anchor_url: str | None = None,
     http_client: httpx.AsyncClient | None = None,
 ) -> AppContext:
     """Build the application context.
@@ -150,20 +300,32 @@ def create_app_context(
         public_url=url,
         admin_key=admin,
         allow_insecure_upstreams=dev_mode,
+        anchor_url=anchor_url or os.environ.get("TOOLGATE_ANCHOR_URL"),
     )
 
-    gate_keys = _load_or_create_keys(store, "gate")
-    control_keys = _load_or_create_keys(store, "control")
+    http = http_client or httpx.AsyncClient(timeout=30.0)
+    gate_keyset = _load_or_create_keyset(store, "gate")
+    control_keyset = _load_or_create_keyset(store, "control")
+    control_keys = control_keyset[0]
     return AppContext(
         store=store,
         vault=Vault(master),
-        audit=AuditLog(store, gate_keys),
+        audit=AuditLog(
+            store,
+            gate_keyset,
+            checkpoint_interval=config.checkpoint_interval,
+            anchor_url=config.anchor_url,
+            http=http,
+        ),
         config=config,
         control_keys=control_keys,
-        gate_keys=gate_keys,
+        gate_keys=gate_keyset[0],
         control_signing_jwk=to_jwk(control_keys.private_jwk),
         control_verify_jwk=to_jwk(control_keys.public_jwk),
+        control_keyset=control_keyset,
+        gate_keyset=gate_keyset,
+        control_verify_jwks={k.kid: k.public_jwk for k in control_keyset},
         token_limiter=SlidingWindowLimiter(config.token_rate_limit, config.rate_window_seconds),
         gate_limiter=SlidingWindowLimiter(config.gate_rate_limit, config.rate_window_seconds),
-        http=http_client or httpx.AsyncClient(timeout=30.0),
+        http=http,
     )

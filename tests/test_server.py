@@ -155,16 +155,22 @@ class Env:
         self, token: str, upstream: str, tool: str, args: dict[str, Any], proof: str | None = None
     ) -> httpx.Response:
         path = f"/v1/gate/call/{upstream}"
+        body = json.dumps({"tool": tool, "args": args}).encode()
         proof = proof or sign_pop_proof(
             self.agent_keys.private_jwk,
             htm="POST",
             htu=f"{PUBLIC_URL}{path}",
             access_token=token,
+            body=body,
         )
         return self.client.post(
             path,
-            headers={"authorization": f"Bearer {token}", "x-toolgate-proof": proof},
-            json={"tool": tool, "args": args},
+            headers={
+                "authorization": f"Bearer {token}",
+                "x-toolgate-proof": proof,
+                "content-type": "application/json",
+            },
+            content=body,
         )
 
     def execute_approval(self, token: str, approval_id: str) -> httpx.Response:
@@ -220,8 +226,13 @@ def test_policy_denial_is_audited(env: Env) -> None:
 def test_proof_replay_rejected(env: Env) -> None:
     token = env.get_token()
     path = "/v1/gate/call/crm"
+    body = json.dumps({"tool": "read_contact", "args": {}}).encode()
     proof = sign_pop_proof(
-        env.agent_keys.private_jwk, htm="POST", htu=f"{PUBLIC_URL}{path}", access_token=token
+        env.agent_keys.private_jwk,
+        htm="POST",
+        htu=f"{PUBLIC_URL}{path}",
+        access_token=token,
+        body=body,
     )
     first = env.gate_call(token, "crm", "read_contact", {}, proof=proof)
     assert first.status_code == 200

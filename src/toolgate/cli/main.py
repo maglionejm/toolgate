@@ -16,11 +16,13 @@ from rich.table import Table
 from toolgate import __version__
 from toolgate.core import (
     AuditRecord,
+    Checkpoint,
     generate_ed25519_key_pair,
     jwk_thumbprint,
     validate_public_ed25519_jwk,
     verify_audit_chain,
     verify_capability_token,
+    verify_checkpoint,
 )
 
 from .client import AdminClient, err_console
@@ -600,38 +602,64 @@ def audit_verify(
         )
         raise typer.Exit(0 if ok else 2)
 
-    records = [AuditRecord.model_validate(r) for r in json.loads(file.read_text())]
-    gate_jwk = json.loads(jwk_file.read_text()) if jwk_file else client().public("/v1/keys")["gate"]
-    result = verify_audit_chain(records, gate_jwk)
+    exported = json.loads(file.read_text())
+    # Bundle exports carry {records, checkpoints}; bare record arrays still work.
+    raw_records = exported["records"] if isinstance(exported, dict) else exported
+    raw_checkpoints = exported.get("checkpoints", []) if isinstance(exported, dict) else []
+    records = [AuditRecord.model_validate(r) for r in raw_records]
+
+    if jwk_file:
+        loaded = json.loads(jwk_file.read_text())
+        keys = (
+            {k.get("kid", ""): k for k in loaded["keys"]} if "keys" in loaded else loaded
+        )
+    else:
+        remote = client().public("/v1/keys")
+        keys = {k.get("kid", ""): k for k in remote["gate_jwks"]["keys"]}
+
+    result = verify_audit_chain(records, keys)
+    checkpoints = [Checkpoint.model_validate(c) for c in raw_checkpoints]
+    cp_valid = sum(1 for c in checkpoints if verify_checkpoint(c, records, keys))
     payload = {
         "valid": result.valid,
         "length": result.length,
+        "checkpoints_valid": cp_valid,
+        "checkpoints_total": len(checkpoints),
         **(
             {"broken_at_seq": result.broken_at_seq, "reason": result.reason}
             if not result.valid
             else {}
         ),
     }
+    ok = result.valid and cp_valid == len(checkpoints)
     emit(
         payload,
-        f"[{'green' if result.valid else 'red'}]valid: {result.valid}[/] · length {result.length}"
+        f"[{'green' if ok else 'red'}]valid: {result.valid}[/] · length {result.length}"
+        + f" · checkpoints {cp_valid}/{len(checkpoints)}"
         + (f" · broken at seq {result.broken_at_seq}: {result.reason}" if not result.valid else ""),
     )
-    raise typer.Exit(0 if result.valid else 2)
+    raise typer.Exit(0 if ok else 2)
 
 
 @audit_app.command("export")
 def audit_export(
     out: Annotated[Path, typer.Option("--out")] = Path("audit-export.json"),
 ) -> None:
-    """Export the full chain (all tenants — partial chains cannot be verified)."""
-    data = client().get("/v1/control/audit")
+    """Export the full chain + signed checkpoints (all tenants — partial
+    chains cannot be verified)."""
+    data = client().get("/v1/control/audit/bundle")
     text = json.dumps(data, indent=2)
     out.write_text(text + "\n")
     digest = hashlib.sha256(text.encode()).hexdigest()
     emit(
-        {"file": str(out), "records": len(data), "sha256": digest},
-        f"[green]exported[/] {len(data)} records -> {out}\nsha256 {digest}",
+        {
+            "file": str(out),
+            "records": len(data["records"]),
+            "checkpoints": len(data["checkpoints"]),
+            "sha256": digest,
+        },
+        f"[green]exported[/] {len(data['records'])} records + "
+        f"{len(data['checkpoints'])} checkpoints -> {out}\nsha256 {digest}",
     )
 
 
