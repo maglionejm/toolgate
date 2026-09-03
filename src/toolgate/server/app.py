@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from toolgate.core import ErrorCodes, ToolgateError
 
@@ -73,6 +74,11 @@ def create_app(ctx: AppContext) -> FastAPI:
     app.include_router(control_router(ctx))
     app.include_router(token_router(ctx))
     app.include_router(gate_router(ctx))
+
+    # Operator console: static SPA, authenticates with operator keys client-side.
+    from toolgate.console import static_dir
+
+    app.mount("/console", StaticFiles(directory=static_dir(), html=True), name="console")
 
     @app.exception_handler(ToolgateError)
     async def toolgate_error_handler(_request: Request, err: ToolgateError) -> JSONResponse:

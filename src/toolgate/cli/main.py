@@ -43,6 +43,7 @@ approvals_app = typer.Typer(no_args_is_help=True, help="Human-in-the-loop approv
 audit_app = typer.Typer(no_args_is_help=True, help="Signed audit chain.")
 token_app = typer.Typer(no_args_is_help=True, help="Capability token utilities.")
 dev_app = typer.Typer(no_args_is_help=True, help="Developer harness (acts as an agent).")
+operators_app = typer.Typer(no_args_is_help=True, help="Control-plane operators and roles.")
 
 for name, sub in [
     ("keys", keys_app),
@@ -56,6 +57,7 @@ for name, sub in [
     ("audit", audit_app),
     ("token", token_app),
     ("dev", dev_app),
+    ("operators", operators_app),
 ]:
     app.add_typer(sub, name=name)
 
@@ -489,23 +491,28 @@ def approvals_list(
     emit(data, _table(f"approvals ({status})", ["id", "call", "args", "status", "at"], rows))
 
 
-def _decide(approval_id: str, decision: str, by: str) -> None:
-    data = client().post(
-        f"/v1/control/approvals/{approval_id}/decide", {"decision": decision, "decidedBy": by}
-    )
+def _decide(approval_id: str, decision: str, by: str | None) -> None:
+    body: dict[str, Any] = {"decision": decision}
+    if by:
+        body["decidedBy"] = by
+    data = client().post(f"/v1/control/approvals/{approval_id}/decide", body)
     color = "green" if decision == "approve" else "red"
     emit(data, f"[{color}]{data['status']}[/] {approval_id} by {by}")
 
 
 @approvals_app.command("approve")
 def approvals_approve(
-    approval_id: str, by: Annotated[str, typer.Option("--by", help="Deciding user id.")]
+    approval_id: str,
+    by: Annotated[str | None, typer.Option("--by", help="Decider (defaults to operator).")] = None,
 ) -> None:
     _decide(approval_id, "approve", by)
 
 
 @approvals_app.command("deny")
-def approvals_deny(approval_id: str, by: Annotated[str, typer.Option("--by")]) -> None:
+def approvals_deny(
+    approval_id: str,
+    by: Annotated[str | None, typer.Option("--by", help="Decider (defaults to operator).")] = None,
+) -> None:
     _decide(approval_id, "deny", by)
 
 
@@ -554,6 +561,72 @@ def approvals_watch(
             time.sleep(interval)
     except KeyboardInterrupt:
         console.print("[dim]stopped[/]")
+
+
+@operators_app.command("create")
+def operators_create(
+    name: Annotated[str, typer.Option("--name")],
+    role: Annotated[str, typer.Option("--role", help="owner | approver | auditor")],
+) -> None:
+    """Create an operator; the opk_ key is printed exactly once."""
+    data = client().post("/v1/control/operators", {"name": name, "role": role})
+    emit(
+        data,
+        Panel(
+            f"operator [bold]{data['operator']['id']}[/] ({name}, {role})\n"
+            f"key (shown once, store it now): [bold]{data['key']}[/]",
+            title="operator created",
+            border_style="green",
+        ),
+    )
+
+
+@operators_app.command("list")
+def operators_list() -> None:
+    data = client().get("/v1/control/operators")
+    emit(
+        data,
+        _table(
+            "operators",
+            ["id", "name", "role", "status"],
+            [[o["id"], o["name"], o["role"], o["status"]] for o in data],
+        ),
+    )
+
+
+@operators_app.command("disable")
+def operators_disable(operator_id: str) -> None:
+    data = client().post(f"/v1/control/operators/{operator_id}/disable")
+    emit(data, f"[red]disabled[/] {data['id']}")
+
+
+@policies_app.command("simulate")
+def policies_simulate(
+    policy_id: str,
+    upstream: Annotated[str, typer.Option("--upstream")],
+    tool: Annotated[str, typer.Option("--tool")],
+    args: Annotated[str, typer.Option("--args")] = "{}",
+    cost: Annotated[int, typer.Option("--cost")] = 1,
+    tainted: Annotated[bool, typer.Option("--tainted", help="Simulate a tainted task.")] = False,
+) -> None:
+    """Dry-run a call against a policy: would the gate allow it?"""
+    data = client().post(
+        f"/v1/control/policies/{policy_id}/simulate",
+        {
+            "upstream": upstream,
+            "tool": tool,
+            "args": json.loads(args),
+            "costUnits": cost,
+            "tainted": tainted,
+        },
+    )
+    color = {"allow": "green", "deny": "red", "require_approval": "yellow"}[data["effect"]]
+    emit(
+        data,
+        f"[{color}]{data['effect']}[/] ({data['source']}"
+        + (f", rule {data['ruleId']}" if data.get("ruleId") else "")
+        + f") — {data['reason']}",
+    )
 
 
 # ---------------------------------------------------------------------------

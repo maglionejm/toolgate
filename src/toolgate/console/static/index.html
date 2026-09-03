@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toolgate Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="top">
+  <span class="wordmark">TOOLGATE<span class="cursor">▮</span> <em>console</em></span>
+  <span class="who mono" id="who"></span>
+  <button class="btn btn-ghost" id="logout" hidden>sign out</button>
+</nav>
+
+<section class="login" id="login">
+  <div class="login-card">
+    <p class="panel-label">operator sign-in</p>
+    <p class="hint">Paste an operator key (<span class="mono">opk_…</span>) or the break-glass admin key. Keys stay in this tab's session storage only.</p>
+    <input class="mono" id="key-input" type="password" placeholder="opk_…" autocomplete="off">
+    <button class="btn btn-primary" id="login-btn">Connect</button>
+    <p class="login-err mono" id="login-err"></p>
+  </div>
+</section>
+
+<main class="app" id="app" hidden>
+  <div class="tabs" id="tabs">
+    <button data-view="approvals" class="active">Approvals</button>
+    <button data-view="audit">Audit</button>
+    <button data-view="grants">Grants</button>
+    <button data-view="simulator">Simulator</button>
+  </div>
+
+  <div class="tenant-row">
+    <label class="panel-label" for="tenant">tenant</label>
+    <select id="tenant" class="mono"></select>
+  </div>
+
+  <section class="view" id="view-approvals">
+    <p class="panel-label">pending approvals · decisions bind to the exact arguments shown</p>
+    <div id="approvals-list" class="cards"></div>
+  </section>
+
+  <section class="view" id="view-audit" hidden>
+    <div class="row-between">
+      <p class="panel-label">signed audit chain</p>
+      <span class="badge mono" id="chain-badge">verifying…</span>
+    </div>
+    <table class="tbl mono" id="audit-table">
+      <thead><tr><th>seq</th><th>time</th><th>actor</th><th>action</th><th>decision</th><th>result</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="view" id="view-grants" hidden>
+    <p class="panel-label">delegations</p>
+    <table class="tbl mono" id="grants-table">
+      <thead><tr><th>id</th><th>agent</th><th>budget</th><th>status</th><th>expires</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="view" id="view-simulator" hidden>
+    <p class="panel-label">policy simulator · would the gate allow this call?</p>
+    <div class="sim-form">
+      <select id="sim-policy" class="mono"></select>
+      <input id="sim-upstream" class="mono" placeholder="upstream (e.g. crm)">
+      <input id="sim-tool" class="mono" placeholder="tool (e.g. read_contact)">
+      <textarea id="sim-args" class="mono" rows="3">{}</textarea>
+      <label class="check mono"><input type="checkbox" id="sim-tainted"> task has touched untrusted content</label>
+      <button class="btn btn-primary" id="sim-run">Simulate</button>
+    </div>
+    <div class="sim-verdict mono" id="sim-verdict" hidden></div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
