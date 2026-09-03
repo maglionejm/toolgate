@@ -16,6 +16,17 @@ def create_app(ctx: AppContext) -> FastAPI:
     async def healthz() -> dict[str, object]:
         return {"ok": True, "issuer": ctx.config.issuer, "control_kid": ctx.control_keys.kid}
 
+    @app.get("/v1/keys")
+    async def public_keys() -> dict[str, object]:
+        """Public verification material: lets anyone verify capability tokens
+        and independently verify exported audit chains offline."""
+        return {
+            "issuer": ctx.config.issuer,
+            "gate_audience": ctx.config.gate_audience,
+            "control": ctx.control_keys.public_jwk,
+            "gate": ctx.gate_keys.public_jwk,
+        }
+
     app.include_router(control_router(ctx))
     app.include_router(token_router(ctx))
     app.include_router(gate_router(ctx))

@@ -24,8 +24,14 @@ Agent (no secrets) ── token + one-time proof ──▶ GATE ── real cred
 ## Try it
 
 ```bash
+uvx --from toolgate-io toolgate demo    # zero-install, straight from PyPI
+```
+
+or from source:
+
+```bash
 uv sync
-uv run toolgate-demo
+uv run toolgate demo
 ```
 
 The demo boots Toolgate plus two credential-guarded mock APIs and runs a six-act scenario: an allowed CRM read (the upstream rejects anything without its live key — proving injection), a policy denial, an external email parked for human approval and executed against the approved args only, budget exhaustion, revocation that kills a live token instantly, and audit chain verification with the full decision trace.
@@ -50,6 +56,21 @@ The demo boots Toolgate plus two credential-guarded mock APIs and runs a six-act
 5. **Enforce**: token bounds → policy rules (first match wins, glob matching, dot-path argument constraints, cost ceilings) → default deny → atomic budget charge.
 6. **Approve**: `require_approval` parks the call; a human decides on the exact argument set (hash-bound — no post-approval swaps); the agent polls and executes.
 7. **Audit**: every decision appends to a hash chain signed by the gate key. `GET /v1/control/audit/verify` proves nothing was edited, removed, or reordered.
+
+## CLI
+
+Everything an operator does is a `toolgate` command ([full reference](docs/reference/CLI.md)):
+
+```bash
+pip install toolgate-io
+toolgate init                                        # profile + connectivity check
+toolgate keys generate --out agent-key.json          # agent identity (private key stays local)
+toolgate grants create -t tnt_... --user usr_... --agent agt_... \
+    --policy pol_... --budget 100 --authz "crm:*"    # bounded delegation
+toolgate approvals watch -t tnt_... --by usr_...     # interactive human-in-the-loop inbox
+toolgate audit export --out audit.json && toolgate audit verify --file audit.json   # offline proof
+toolgate dev call crm read_contact --grant grt_... --key agent-key.json             # act as the agent
+```
 
 ## Agent-side SDK
 

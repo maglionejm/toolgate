@@ -123,6 +123,33 @@ class Store:
     def get_tenant(self, tenant_id: str) -> Tenant | None:
         return self._get_model("tenant", tenant_id, Tenant)
 
+    def list_tenants(self) -> list[Tenant]:
+        rows = self.db.execute(
+            "SELECT json FROM entities WHERE kind = 'tenant' ORDER BY id"
+        ).fetchall()
+        return [Tenant.model_validate(json.loads(r[0])) for r in rows]
+
+    def list_users(self, tenant_id: str) -> list[User]:
+        return [User.model_validate(d) for d in self._list("user", tenant_id)]
+
+    def list_agents(self, tenant_id: str) -> list[AgentIdentity]:
+        return [AgentIdentity.model_validate(d) for d in self._list("agent", tenant_id)]
+
+    def list_upstreams(self, tenant_id: str) -> list[Upstream]:
+        return [Upstream.model_validate(d) for d in self._list("upstream", tenant_id)]
+
+    def list_policies(self, tenant_id: str) -> list[Policy]:
+        return [Policy.model_validate(d) for d in self._list("policy", tenant_id)]
+
+    def list_grants(self, tenant_id: str) -> list[DelegationGrant]:
+        # get_grant merges the live budget row; accuracy over row count at CLI scale.
+        grants = []
+        for doc in self._list("grant", tenant_id):
+            grant = self.get_grant(doc["id"])
+            if grant:
+                grants.append(grant)
+        return grants
+
     def put_user(self, u: User) -> None:
         self._put("user", u.id, u.tenantId, u.model_dump(mode="json", exclude_none=True))
 

@@ -217,6 +217,40 @@ def control_router(ctx: AppContext) -> APIRouter:
         ctx.store.put_grant(grant)
         return grant
 
+    @router.get("/tenants", dependencies=admin_dep)
+    async def list_tenants() -> list[Tenant]:
+        return ctx.store.list_tenants()
+
+    @router.get("/users", dependencies=admin_dep)
+    async def list_users(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
+        users = ctx.store.list_users(tenantId)
+        return [u.model_dump(mode="json", exclude_none=True) for u in users]
+
+    @router.get("/agents", dependencies=admin_dep)
+    async def list_agents(tenantId: Annotated[str, Query()]) -> list[AgentIdentity]:
+        return ctx.store.list_agents(tenantId)
+
+    @router.get("/upstreams", dependencies=admin_dep)
+    async def list_upstreams(tenantId: Annotated[str, Query()]) -> list[Upstream]:
+        return ctx.store.list_upstreams(tenantId)
+
+    @router.get("/policies", dependencies=admin_dep)
+    async def list_policies(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
+        return [
+            p.model_dump(mode="json", exclude_none=True) for p in ctx.store.list_policies(tenantId)
+        ]
+
+    @router.get("/grants", dependencies=admin_dep)
+    async def list_grants(tenantId: Annotated[str, Query()]) -> list[DelegationGrant]:
+        return ctx.store.list_grants(tenantId)
+
+    @router.get("/grants/{grant_id}", dependencies=admin_dep)
+    async def get_grant(grant_id: str) -> DelegationGrant:
+        grant = ctx.store.get_grant(grant_id)
+        if not grant:
+            raise _not_found("grant", grant_id)
+        return grant
+
     @router.post("/grants/{grant_id}/revoke", dependencies=admin_dep)
     async def revoke_grant(grant_id: str) -> dict[str, str]:
         grant = ctx.store.get_grant(grant_id)
