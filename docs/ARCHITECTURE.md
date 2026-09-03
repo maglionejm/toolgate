@@ -97,6 +97,14 @@ Persistence: SQLite (stdlib `sqlite3`) behind a thin store interface — swap fo
 | Credential leakage | credentials only in vault, injected server-side, never logged, never in tokens |
 | Budget runaway | per-grant cost accounting enforced atomically at the gate |
 
-## Non-goals (MVP)
+## v0.4 additions
 
-Upstream OAuth token brokering (Arcade-style third-party OAuth), multi-region, Merkle checkpoint anchoring (Rekor/Tessera), WIMSE WIT/WPT credentials, AuthZEN PDP interface — all tracked as post-MVP issues.
+- **Operators** (ADR 0006): role-scoped operator identities drive the control plane; every mutation audited with real attribution; the static admin key is an audited break-glass.
+- **Verifiable audit v2** (ADR 0007): key rotation with in-chain handoff lineage; Merkle checkpoints with optional external anchoring; offline bundle verification.
+- **Taint policy** (ADR 0008): `contentTrust` on tools + `when.txnTouchedUntrusted` rules break the lethal trifecta structurally.
+- **Proof v2**: PoP proofs bind the exact request body (`cd` claim).
+- **Surfaces**: MCP server at `/v1/mcp` (ADR 0009), operator console at `/console`, tool discovery at `/v1/gate/tools`, framework adapters (`toolgate.integrations`), async SDK, and usage reports derived from the signed chain.
+
+## Non-goals (0.4)
+
+Upstream OAuth token brokering (Arcade-style third-party OAuth), multi-region/Postgres scale-out, Rekor inclusion proofs, passkey operator login, WIMSE WIT/WPT credentials, AuthZEN PDP interface — tracked in the issue backlog.

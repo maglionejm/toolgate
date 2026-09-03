@@ -12,4 +12,4 @@
 | [Deployment](DEPLOYMENT.md) | Platform / DevOps | Configuration, container, Cloud Run, production checklist |
 | [Operations](OPERATIONS.md) | Operators | Runbooks: revocation, approvals, audit verification, rotation, troubleshooting |
 | [Architecture](ARCHITECTURE.md) | Everyone | System design and rationale |
-| [ADRs](adr/) | Contributors | Decision records 0001–0005 |
+| [ADRs](adr/) | Contributors | Decision records 0001–0009 |

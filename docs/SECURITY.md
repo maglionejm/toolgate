@@ -1,6 +1,6 @@
 # Security Model
 
-> Toolgate 0.3 · Last updated 2026-09-03
+> Toolgate 0.4 · Last updated 2026-09-12
 
 ## Design commitment
 
@@ -35,6 +35,10 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 | T9 | Audit tampering / operator cover-up | Hash chain + Ed25519 signatures; verification detects edit, removal, reorder, foreign key | Audit | yes |
 | T10 | Cross-tenant access | Tenant claim in token; upstream/approval/audit lookups tenant-scoped | Gate | partial (see gaps) |
 | T11 | Token minted for agent A used by agent B | `cnf.jkt` is A's key thumbprint; B cannot produce proofs | Gate | yes |
+| T13 | Body substitution under a captured proof | Proof v2 `cd` claim binds the exact request bytes | Gate | yes |
+| T14 | Gate-key compromise -> silent history re-signing | Merkle checkpoints + anchoring; rotation lineage in-chain | Audit | yes |
+| T15 | Tool-chain exfiltration (lethal trifecta) | txn taint + `when.txnTouchedUntrusted` policies | Gate + policy | yes |
+| T16 | Anonymous or over-broad admin actions | Operator identities + roles; break-glass audited | Control plane | yes |
 | T12 | Approval fatigue as an attack surface (OWASP T10) | Policy tiers: allow routine, approve consequential; budgets cap the rest | Policy design | design-level |
 
 > The T8 "never in tokens, responses, or logs" guarantee covers **upstream credentials**. The **admin key** is a distinct secret — a control-plane bearer credential. As of this release it is no longer printed in plaintext at server boot; only a short fingerprint is logged, so an operator can confirm which key is active without the value ever appearing in logs. Set it explicitly via `TOOLGATE_ADMIN_KEY` and distribute it out-of-band.
@@ -58,11 +62,12 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 
 ## Known gaps (tracked, not hidden)
 
-- **Admin plane**: single static admin key (a control-plane bearer credential; logged only as a fingerprint at boot, never in plaintext); no operator identities, no MFA, no rate limiting (issues #24, #21).
+- **Operator auth**: per-operator keys, not passkeys/OIDC; no MFA yet (ADR 0006 follow-up).
+- **MCP surface** trades PoP sender-binding for ecosystem compatibility (ADR 0009); set `mcp_enabled=False` to refuse it.
 - **Tenant isolation** relies on application-level filters over a shared SQLite file; no per-tenant encryption.
 - **Vault** master key is env-based; KMS envelope encryption pending (#8).
-- **Audit** chain is internally verifiable but not yet externally anchored (#12); a compromised gate key could re-sign a rewritten chain.
-- **No dataflow policy**: per-tool allowlists don't stop benign-tool *composition* attacks; requires taint/dataflow tracking (research direction).
+- **Anchoring** ships as a webhook witness; Rekor inclusion/consistency proofs pending (#12).
+- **Taint** is binary and per-txn; field-level dataflow is future work (ADR 0008).
 
 ## Reporting
 

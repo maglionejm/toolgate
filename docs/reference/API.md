@@ -1,12 +1,12 @@
 # API Reference
 
-> Toolgate 0.3 · Last updated 2026-09-03 · Base URL: your deployment (`TOOLGATE_PUBLIC_URL`)
+> Toolgate 0.4 · Last updated 2026-09-12 · Base URL: your deployment (`TOOLGATE_PUBLIC_URL`)
 
 Three API surfaces with distinct authentication:
 
 | Surface | Prefix | Authentication |
 | --- | --- | --- |
-| Control plane | `/v1/control/*` | `x-toolgate-admin-key` header |
+| Control plane | `/v1/control/*` | `x-toolgate-operator-key` (roles: auditor < approver < owner) or break-glass `x-toolgate-admin-key` |
 | Token endpoint | `/v1/token` | Signed client assertion (in body) |
 | Gate | `/v1/gate/*` | `Authorization: Bearer <capability token>` + `x-toolgate-proof` |
 
@@ -214,6 +214,43 @@ Poll an approval's status. Requires the capability token of the same grant **and
 Execute an approved call. The **stored** (approved) arguments are used — arguments cannot be re-submitted. One execution per approval; subsequent attempts return `TG_APPROVAL_DENIED`.
 
 ---
+
+## Added in 0.4
+
+### Operators & roles
+
+Reads require `auditor`+, approval decisions `approver`+, mutations `owner`. All mutations are audited with `decision.source="operator"`.
+
+- `POST /v1/control/operators` `{name, role}` → `201 {operator, key}` — the `opk_` key is returned exactly once; only its SHA-256 is stored.
+- `GET /v1/control/operators` · `POST /v1/control/operators/{id}/disable`
+
+### Keys & audit integrity
+
+- `POST /v1/control/keys/rotate` `{plane: "control"|"gate"}` → `{plane, kid}`. Gate rotation appends a signed handoff record (lineage in `meta.newKid`).
+- `POST /v1/control/audit/checkpoint` — cut a signed Merkle checkpoint now.
+- `GET /v1/control/audit/checkpoints` — stored checkpoints.
+- `GET /v1/control/audit/bundle[?tenantId]` — `{records, checkpoints}` for offline verification.
+- `GET /v1/control/audit/verify` now also reports `checkpoints_valid` / `checkpoints_total`.
+- `GET /v1/keys` now serves `control_jwks` / `gate_jwks` keysets and `proof_versions: [2]`.
+
+### Policy simulation & reports
+
+- `POST /v1/control/policies/{id}/simulate` `{upstream, tool, args?, costUnits?, tainted?, authorization?}` → the decision, with no execution, audit, or budget effect (`auditor`+).
+- `GET /v1/control/reports?tenantId=` — usage rollup derived from the signed chain: totals, byAgent, byTool, approval-to-execute latency (`auditor`+).
+
+### Gate additions
+
+- `GET /v1/gate/tools` (capability token) — the tools reachable under this token's `authorization_details`, with `argsSchema`.
+- Proof v2: any gate request with a body must carry a `cd` (content-digest) claim in its PoP proof — see the Token Specification.
+- Policy rules may declare `when.txnTouchedUntrusted`; tools may declare `contentTrust: "untrusted_source"` and `argsSchema`.
+
+### MCP surface
+
+`POST /v1/mcp` (bearer capability token; JSON-RPC 2.0): `initialize`, `ping`, `tools/list` (names `upstream__tool`), `tools/call` through the standard pipeline. Approvals return error `-32009` with `data.approval_id`; gate denials return `-32010` with the Toolgate error envelope in `data`. No PoP proof on this surface by design (ADR 0009); disable with `mcp_enabled=False`.
+
+### Console
+
+The operator console is served at `/console` (static SPA; authenticates with operator keys client-side).
 
 ## Health
 

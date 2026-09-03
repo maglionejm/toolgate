@@ -1,6 +1,6 @@
 # Deployment Guide
 
-> Toolgate 0.3 · Last updated 2026-09-03
+> Toolgate 0.4 · Last updated 2026-09-12
 
 ## Runtime requirements
 
@@ -33,7 +33,21 @@ TOOLGATE_PUBLIC_URL=https://gate.internal.example \
 uv run toolgate-server
 ```
 
-## Container
+## Container (official)
+
+```bash
+toolgate up                      # generates .toolgate.env (0600) and runs the container
+# or explicitly:
+docker run -p 8484:8484 --env-file .toolgate.env -v toolgate-data:/data \
+  ghcr.io/maglionejm/toolgate:latest
+docker compose up                # compose.yaml in the repo
+```
+
+Images are published to `ghcr.io/maglionejm/toolgate` on every release. The container binds `TOOLGATE_HOST=0.0.0.0` via env and stores SQLite in the `/data` volume. The operator console ships in the image at `/console`.
+
+Additional environment: `TOOLGATE_HOST` (default 127.0.0.1), `TOOLGATE_DEV=1` (dev-only fail-open secrets), `TOOLGATE_ANCHOR_URL` (checkpoint witness webhook).
+
+## Container (custom build)
 
 ```dockerfile
 FROM python:3.13-slim

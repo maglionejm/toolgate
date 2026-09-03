@@ -1,6 +1,6 @@
 # Quickstart
 
-> Toolgate 0.3 · Last updated 2026-09-03 · Audience: application engineers integrating an agent
+> Toolgate 0.4 · Last updated 2026-09-12 · Audience: application engineers integrating an agent
 
 This guide takes you from zero to a policy-gated, human-approvable, fully audited agent tool call in about ten minutes. Everything runs locally.
 
@@ -24,6 +24,8 @@ This guide takes you from zero to a policy-gated, human-approvable, fully audite
 > ```
 >
 > The raw API path below remains fully supported.
+
+> **0.4:** create per-person operators (`toolgate operators create`) instead of sharing the admin key, open the console at `http://localhost:8484/console`, and try the MCP surface — any MCP client can consume your gated tools at `POST /v1/mcp` with a capability token.
 
 ## 1. Install and boot
 

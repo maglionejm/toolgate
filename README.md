@@ -8,6 +8,8 @@
 
 **Portal & live simulation: [maglionejm.github.io/toolgate](https://maglionejm.github.io/toolgate/)** — try the gate and tamper with a real hash chain in your browser.
 
+**New in 0.4:** MCP surface (any MCP client consumes gated tools), operator identities + roles, operator console at `/console`, body-bound PoP proofs, key rotation with in-chain lineage, Merkle-checkpointed + anchorable audit, taint-tracking policies (lethal-trifecta defense), framework adapters, async SDK, usage reports, and an official Docker image (`toolgate up`).
+
 Agents should never hold credentials — not the user's OAuth token, not a tenant API key, not anything. Toolgate sits between agents and the tools they call:
 
 - the agent authenticates with **its own Ed25519 key** and a **delegation grant** from a human;
@@ -25,6 +27,7 @@ Agent (no secrets) ── token + one-time proof ──▶ GATE ── real cred
 
 ```bash
 uvx --from toolgate-io toolgate demo    # zero-install, straight from PyPI
+uvx --from toolgate-io toolgate up      # run the real thing in Docker (console at /console)
 ```
 
 or from source:
@@ -100,7 +103,35 @@ if isinstance(result, PendingApproval):
 | `toolgate.core` | Capability tokens, client assertions + PoP proofs, policy engine, audit chain |
 | `toolgate.server` | Control plane (registry, grants, token endpoint, approvals, revocation, audit) + gate (enforcement pipeline, vault) |
 | `toolgate.sdk` | Agent-side client: token exchange, signed calls, approval flow, typed errors |
+| `toolgate.integrations` | Framework adapters: `openai_tools`, `langchain_tools` (`pip install 'toolgate-io[langchain]'`) |
+| `toolgate.console` | Operator console (approvals inbox, audit explorer, grants, simulator, reports) served at `/console` |
 | `toolgate.demo` | End-to-end scenario (`uv run toolgate-demo`) |
+
+## MCP & framework adapters
+
+Any MCP client can consume a grant's tools — paste the server URL and a capability token:
+
+```
+POST /v1/mcp        Authorization: Bearer <capability token>
+tools/list -> crm__read_contact, email__send_email   (bounded by the delegation)
+tools/call -> runs the full policy/budget/audit pipeline; approvals surface as
+              retryable errors carrying the approval id
+```
+
+Or stay in your framework:
+
+```python
+from toolgate.integrations import openai_tools
+tools, dispatch = openai_tools(client)      # OpenAI tools format + gate-routed dispatch
+# pip install 'toolgate-io[langchain]' -> langchain_tools(client)
+```
+
+Policies can now reason about task history — the lethal-trifecta defense:
+
+```json
+{ "effect": "require_approval", "match": {"tool": "send_email"},
+  "when": {"txnTouchedUntrusted": true} }
+```
 
 ## Documentation
 

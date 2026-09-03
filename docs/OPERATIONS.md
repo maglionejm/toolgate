@@ -1,6 +1,6 @@
 # Operations Runbook
 
-> Toolgate 0.3 · Last updated 2026-09-03 · Audience: operators of a Toolgate deployment
+> Toolgate 0.4 · Last updated 2026-09-12 · Audience: operators of a Toolgate deployment
 
 ## R1 — Emergency: revoke an agent's access
 
@@ -59,7 +59,7 @@ Store exports on WORM/object-lock storage. External Merkle anchoring is tracked 
 | Admin key | Set new `TOOLGATE_ADMIN_KEY`, restart. Old key dies at boot. |
 | Upstream secret | Re-POST the upstream with the new secret (re-seals; same name keeps policies valid). |
 | Vault master key | **Requires re-sealing every secret** — planned as part of KMS envelope work (#8). Until then treat as fixed. |
-| Control-plane / gate signing keys | Not yet rotatable in place (tokens/audit verify against the stored key). Rotation with `kid` overlap is a pre-GA requirement. |
+| Control-plane / gate signing keys | `toolgate keys rotate control|gate` — kid-overlap keysets; gate rotation writes a signed handoff record so offline verification follows the lineage. Old tokens stay valid through their TTL. |
 | Agent keys | Agent-side; register the new public key as a **new agent** and re-grant. |
 
 ## R6 — Common integration failures
@@ -70,3 +70,17 @@ Store exports on WORM/object-lock storage. External Merkle anchoring is tracked 
 | `TG_TOKEN_INVALID: client assertion replayed` | Client retried a token request reusing the assertion | Sign a fresh assertion per attempt (SDK does) |
 | `TG_TOKEN_EXPIRED` bursts | Long-running work on one token | Tokens are ~120s by design; call `token()` per operation (SDK caches and refreshes) |
 | Upstream 401s recorded as `TG_UPSTREAM_ERROR` | Secret rotated upstream but not re-sealed in Toolgate | Re-POST the upstream credential |
+
+
+## R7 — Checkpoints and external anchoring
+
+- Checkpoints are cut automatically (every 64 records and on every gate-key rotation); cut one on demand before exports or audits: `curl -X POST $TG/v1/control/audit/checkpoint`.
+- Set `TOOLGATE_ANCHOR_URL` to POST each checkpoint to an external witness (webhook, ticketing system, Rekor relay). Anchored checkpoints make history rewriting detectable even after a gate-key compromise.
+- `toolgate audit export` + `toolgate audit verify --file` is the offline, third-party-verifiable path: it validates hash linkage, signatures, rotation lineage, and every checkpoint root.
+
+## R8 — Operator lifecycle
+
+- Create per-person operators (`toolgate operators create --name ... --role auditor|approver|owner`); the `opk_` key is shown once.
+- Offboarding: `toolgate operators disable op_...` — immediate.
+- The static admin key is break-glass only: its use is audited as `op_breakglass`; alert on that actor id appearing in the chain.
+- Every control-plane mutation lands in the signed chain with `decision.source="operator"` — review it like any other audit stream.

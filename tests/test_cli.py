@@ -204,7 +204,7 @@ def test_keys_generate_refuses_to_clobber(tmp_path: Path) -> None:
 
 
 def test_watch_abort_does_not_approve() -> None:
-    from toolgate.cli.main import _watch_decision
+    from toolgate.cli.governance import _watch_decision
 
     # The old startswith("a") bug approved "abort", "argh", etc. — it must not now.
     assert _watch_decision("abort") is None

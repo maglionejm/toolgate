@@ -1,6 +1,6 @@
 # CLI Reference
 
-> Toolgate 0.3 · `pip install toolgate-io` (or `uvx --from toolgate-io toolgate`) · the CLI is a pure client of the control-plane API
+> Toolgate 0.4 · `pip install toolgate-io` (or `uvx --from toolgate-io toolgate`) · the CLI is a pure client of the control-plane API
 
 ```
 toolgate [--profile NAME] [--json] COMMAND
@@ -76,6 +76,38 @@ Offline verification is the point: an exported chain is checkable by a party tha
 ```bash
 toolgate token decode <jwt>            # header + claims, clearly marked NOT verified
 toolgate token decode <jwt> --verify   # signature-checked against /v1/keys
+```
+
+## Operators (0.4)
+
+```bash
+toolgate operators create --name "compliance" --role auditor   # opk_ key shown once
+toolgate operators list
+toolgate operators disable op_...
+```
+
+Profiles accept operator keys; the break-glass admin key still works and is audited as `op_breakglass`.
+
+## Keys & integrity (0.4)
+
+```bash
+toolgate keys rotate gate      # signed handoff record, lineage-verifiable offline
+toolgate keys rotate control   # old tokens stay valid through their TTL
+toolgate audit export --out bundle.json     # records + Merkle checkpoints
+toolgate audit verify --file bundle.json    # chain + lineage + checkpoint roots
+```
+
+## Simulation & reports (0.4)
+
+```bash
+toolgate policies simulate pol_... --upstream email --tool send_email --tainted
+toolgate report -t tnt_...     # usage rollup derived from the signed chain
+```
+
+## Deploy (0.4)
+
+```bash
+toolgate up        # Docker: generates fail-closed secrets (.toolgate.env, 0600), starts the container
 ```
 
 ## Dev harness (act as an agent)
