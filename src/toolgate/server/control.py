@@ -1,6 +1,9 @@
+import hmac
+import ipaddress
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, Field
@@ -21,10 +24,52 @@ from toolgate.core import (
     jwk_thumbprint,
     mint_capability_token,
     new_id,
+    validate_public_ed25519_jwk,
     verify_client_assertion,
 )
 
 from .context import AppContext
+
+# Cloud instance-metadata endpoints are never a legitimate upstream; they are
+# the classic SSRF credential-exfiltration target, so they are refused outright.
+_BLOCKED_UPSTREAM_HOSTS = frozenset(
+    {"169.254.169.254", "fd00:ec2::254", "metadata.google.internal"}
+)
+
+
+def _validate_upstream_base_url(base_url: str, *, allow_insecure: bool) -> None:
+    """Reject upstream base URLs that would leak the injected credential.
+
+    The gate POSTs the real upstream secret to this URL, so `http://` sends it
+    in cleartext — allowed only for loopback dev, or when the operator has
+    explicitly opted in. Toolgate upstreams are *meant* to be internal services,
+    so private ranges are NOT blocked; only cloud metadata endpoints are.
+    """
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https"):
+        raise ToolgateError(
+            ErrorCodes.VALIDATION, f"upstream baseUrl scheme must be http(s), got {parts.scheme!r}"
+        )
+    host = (parts.hostname or "").lower()
+    if not host:
+        raise ToolgateError(ErrorCodes.VALIDATION, "upstream baseUrl must include a host")
+    if host in _BLOCKED_UPSTREAM_HOSTS:
+        raise ToolgateError(
+            ErrorCodes.VALIDATION, "upstream baseUrl targets a blocked metadata host"
+        )
+    if parts.scheme == "http":
+        is_loopback = host in ("localhost", "127.0.0.1", "::1")
+        if not is_loopback:
+            try:
+                is_loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                is_loopback = False
+        if not (is_loopback or allow_insecure):
+            raise ToolgateError(
+                ErrorCodes.VALIDATION,
+                "upstream baseUrl must use https (cleartext credential would leak); "
+                "http is allowed only for loopback or with TOOLGATE_DEV set",
+            )
 
 # ---------------------------------------------------------------------------
 # Request bodies
@@ -73,7 +118,7 @@ class CreateGrant(BaseModel):
     userId: str
     agentId: str
     policyId: str
-    scopes: list[str] = []
+    scopes: list[str] = Field(default_factory=list)
     authorization: list[AuthorizationDetail] = Field(min_length=1)
     budgetMaxUnits: int = Field(gt=0)
     ttlHours: float = Field(default=24, gt=0)
@@ -110,7 +155,11 @@ def control_router(ctx: AppContext) -> APIRouter:
     async def require_admin(
         x_toolgate_admin_key: Annotated[str | None, Header()] = None,
     ) -> None:
-        if x_toolgate_admin_key != ctx.config.admin_key:
+        # Constant-time compare so the most sensitive credential in the system
+        # is not subject to byte-by-byte timing discrimination.
+        if x_toolgate_admin_key is None or not hmac.compare_digest(
+            x_toolgate_admin_key, ctx.config.admin_key
+        ):
             raise ToolgateError(ErrorCodes.TOKEN_INVALID, "missing or wrong admin key")
 
     admin_dep = [Depends(require_admin)]
@@ -137,6 +186,13 @@ def control_router(ctx: AppContext) -> APIRouter:
     @router.post("/agents", status_code=201, dependencies=admin_dep)
     async def create_agent(body: CreateAgent) -> AgentIdentity:
         _require_tenant(ctx, body.tenantId)
+        # The agent proves possession of one Ed25519 private key. Reject anything
+        # else here so a symmetric/other key can never be stored and later used
+        # to forge assertions and PoP proofs (sender-binding collapse).
+        try:
+            validate_public_ed25519_jwk(body.publicJwk)
+        except ValueError as err:
+            raise ToolgateError(ErrorCodes.VALIDATION, f"invalid agent public key: {err}") from err
         agent = AgentIdentity(
             id=new_id("agt"),
             tenantId=body.tenantId,
@@ -151,6 +207,9 @@ def control_router(ctx: AppContext) -> APIRouter:
     @router.post("/upstreams", status_code=201, dependencies=admin_dep)
     async def create_upstream(body: CreateUpstream) -> Upstream:
         _require_tenant(ctx, body.tenantId)
+        _validate_upstream_base_url(
+            body.baseUrl, allow_insecure=ctx.config.allow_insecure_upstreams
+        )
         cred = body.credential
         if cred.mode == "header" and not cred.headerName:
             raise ToolgateError(ErrorCodes.VALIDATION, "headerName required for header mode")
@@ -314,6 +373,10 @@ def token_router(ctx: AppContext) -> APIRouter:
 
     @router.post("/v1/token")
     async def exchange(body: TokenRequest) -> dict[str, Any]:
+        if not ctx.token_limiter.allow(body.grant_id):
+            raise ToolgateError(
+                ErrorCodes.RATE_LIMITED, "token exchange rate limit exceeded for this grant"
+            )
         grant = ctx.store.get_grant(body.grant_id)
         if not grant:
             raise ToolgateError(ErrorCodes.NOT_FOUND, "unknown grant")

@@ -3,6 +3,7 @@ from typing import Any
 import httpx
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from .config import Profile
 
@@ -40,10 +41,13 @@ class AdminClient:
             body = {"error": {"code": "TG_INTERNAL", "message": res.text[:200]}}
         if res.status_code >= 400:
             err = body.get("error", {})
-            err_console.print(
-                f"[bold red]{err.get('code', res.status_code)}[/] {err.get('message', '')}"
-            )
+            # Escape server-controlled strings: a hostile/compromised server must
+            # not be able to inject rich markup ([/], fake [green], …) or crash
+            # rendering with a MarkupError. Static markup below stays unescaped.
+            code = escape(str(err.get("code", res.status_code)))
+            message = escape(str(err.get("message", "")))
+            err_console.print(f"[bold red]{code}[/] {message}")
             if err.get("details"):
-                err_console.print(f"[dim]{err['details']}[/]")
+                err_console.print(f"[dim]{escape(str(err['details']))}[/]")
             raise typer.Exit(1)
         return body

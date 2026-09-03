@@ -184,7 +184,9 @@ class ApprovalRequest(BaseModel):
     upstream: str
     tool: str
     args: dict[str, Any]
-    status: Literal["pending", "approved", "denied", "expired", "executed"]
+    # "executing" is a transient claim taken atomically before the upstream call
+    # so two concurrent executes of one approval cannot both fire.
+    status: Literal["pending", "approved", "denied", "expired", "executing", "executed"]
     requestedAt: str
     expiresAt: str
     decidedAt: str | None = None

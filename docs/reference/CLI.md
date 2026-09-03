@@ -69,7 +69,7 @@ toolgate audit verify --file audit.json                # OFFLINE — key fetched
 toolgate audit verify --file audit.json --jwk gate.jwk # fully air-gapped verification
 ```
 
-Offline verification is the point: an exported chain is checkable by a party that does not trust the server. Exit code `2` when the chain is broken (with `broken_at_seq`).
+Offline verification is the point: an exported chain is checkable by a party that does not trust the server — **but only if you supply the gate's public key out-of-band via `--jwk`**. Without `--jwk`, `audit verify --file` fetches the gate key from `GET /v1/keys` on the very server being audited, so a server that forged the chain could serve a matching key alongside it; that mode confirms internal consistency, not third-party trust. Genuine offline / air-gapped verification requires passing `--jwk` with an independently-obtained key. Exit code `2` when the chain is broken (with `broken_at_seq`).
 
 ## Tokens
 

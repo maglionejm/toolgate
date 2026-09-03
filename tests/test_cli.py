@@ -1,5 +1,6 @@
 import json
 import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,9 @@ class Env:
         os.environ["TOOLGATE_CONFIG"] = str(tmp / "config.json")
 
         self.key_file = tmp / "agent-key.json"
-        self.tenant = self.run_json("keys", "generate", "--out", str(self.key_file)) and None
+        self.run_json("keys", "generate", "--out", str(self.key_file))
+        # `agents register` accepts the generated private key file and sends only
+        # the public half (the documented one-file flow), rejecting non-Ed25519 keys.
         self.tenant = self.run_json("tenants", "create", "Acme")["id"]
         self.user = self.run_json(
             "users", "create", "-t", self.tenant, "--name", "Sam", "--email", "sam@acme.com"
@@ -57,7 +60,7 @@ class Env:
             {"id": "never-delete", "effect": "deny", "match": {"tool": "delete_*"}},
             {"id": "external-email", "effect": "require_approval",
              "match": {"tool": "send_email",
-                       "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com)"}]}},
+                       "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com$)"}]}},
             {"id": "allow-rest", "effect": "allow", "match": {}},
         ]))
         self.policy = self.run_json(
@@ -172,3 +175,76 @@ def test_revoked_grant_blocks_dev_call(env: Env) -> None:
     ])
     assert result.exit_code == 1
     assert "TG_REVOKED" in result.output
+
+
+def test_generated_key_file_is_0600(env: Env) -> None:
+    # `keys generate` must create the private key already at 0600.
+    assert stat.S_IMODE(os.stat(env.key_file).st_mode) == 0o600
+
+
+def test_config_file_is_0600(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from toolgate.cli.config import save_profile
+
+    monkeypatch.setenv("TOOLGATE_CONFIG", str(tmp_path / "cfgdir" / "config.json"))
+    path = save_profile("default", GATE_URL, "admin-key")
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
+def test_keys_generate_refuses_to_clobber(tmp_path: Path) -> None:
+    out = tmp_path / "agent-key.json"
+    assert runner.invoke(app, ["keys", "generate", "--out", str(out)]).exit_code == 0
+    original = out.read_text()
+    # Second run without --force must refuse (non-zero) and leave the file intact.
+    clobber = runner.invoke(app, ["keys", "generate", "--out", str(out)])
+    assert clobber.exit_code != 0
+    assert out.read_text() == original
+    # --force overwrites.
+    assert runner.invoke(app, ["keys", "generate", "--out", str(out), "--force"]).exit_code == 0
+    assert out.read_text() != original
+
+
+def test_watch_abort_does_not_approve() -> None:
+    from toolgate.cli.main import _watch_decision
+
+    # The old startswith("a") bug approved "abort", "argh", etc. — it must not now.
+    assert _watch_decision("abort") is None
+    assert _watch_decision("argh") is None
+    assert _watch_decision("") is None
+    assert _watch_decision("skip") is None
+    assert _watch_decision("approve") == "approve"
+    assert _watch_decision(" A ") == "approve"
+    assert _watch_decision("y") == "approve"
+    assert _watch_decision("deny") == "deny"
+    assert _watch_decision("d") == "deny"
+    assert _watch_decision("n") == "deny"
+
+
+def test_agents_register_rejects_non_ed25519(env: Env, tmp_path: Path) -> None:
+    # A symmetric (oct) key must be rejected cleanly — no traceback, non-zero exit.
+    oct_key = tmp_path / "oct.json"
+    oct_key.write_text(json.dumps({"kty": "oct", "k": "c2VjcmV0"}))
+    result = runner.invoke(
+        app, ["agents", "register", "-t", env.tenant, "--name", "bad", "--key", str(oct_key)]
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+    # An EC key must also be rejected (wrong key type).
+    ec_key = tmp_path / "ec.json"
+    ec_key.write_text(json.dumps({"kty": "EC", "crv": "P-256", "x": "aa", "y": "bb"}))
+    result = runner.invoke(
+        app, ["agents", "register", "-t", env.tenant, "--name", "bad", "--key", str(ec_key)]
+    )
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_agents_register_accepts_private_ed25519_file(env: Env) -> None:
+    # The documented flow registers the generated private key file; only the
+    # public half is sent, so it must be accepted (not rejected for carrying "d").
+    result = runner.invoke(
+        app,
+        ["agents", "register", "-t", env.tenant, "--name", "from-priv",
+         "--key", str(env.key_file)],
+    )
+    assert result.exit_code == 0, result.output

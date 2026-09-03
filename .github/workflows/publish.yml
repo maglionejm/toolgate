@@ -14,9 +14,11 @@ jobs:
     permissions:
       id-token: write  # PyPI Trusted Publishing (OIDC) — no stored secrets
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.13"
       - run: uv build
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Pinned to a commit SHA: this job holds the PyPI OIDC identity, so the
+      # publisher action must not float on the mutable release/v1 branch.
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

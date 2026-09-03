@@ -23,6 +23,38 @@ def generate_ed25519_key_pair() -> KeyPairJwk:
     return KeyPairJwk(kid=kid, public_jwk=public, private_jwk=private)
 
 
+# Members that only appear in a private or symmetric key. Their presence in a
+# JWK that is meant to be a public verification key means the caller handed us
+# secret material — reject outright rather than store it.
+_PRIVATE_JWK_MEMBERS = frozenset({"d", "k", "p", "q", "dp", "dq", "qi", "oth"})
+
+
+def validate_public_ed25519_jwk(candidate: Any) -> None:
+    """Enforce the single agent-key invariant: an agent registers exactly one
+    *public* Ed25519 (OKP) verification key and nothing else.
+
+    Raises ``ValueError`` for anything else — symmetric (``oct``) keys, EC/RSA
+    keys, or a "public" JWK that smuggles private material. Without this an
+    attacker can register an ``oct`` key whose public half *is* the shared
+    secret and then forge HS256 client assertions and PoP proofs, collapsing
+    sender-binding entirely.
+    """
+    if not isinstance(candidate, dict):
+        raise ValueError("public JWK must be a JSON object")
+    if candidate.get("kty") != "OKP":
+        raise ValueError(f"agent key kty must be 'OKP', got {candidate.get('kty')!r}")
+    if candidate.get("crv") != "Ed25519":
+        raise ValueError(f"agent key crv must be 'Ed25519', got {candidate.get('crv')!r}")
+    x = candidate.get("x")
+    if not isinstance(x, str) or not x:
+        raise ValueError("agent key must carry a non-empty public 'x' coordinate")
+    leaked = _PRIVATE_JWK_MEMBERS.intersection(candidate)
+    if leaked:
+        raise ValueError(f"public JWK must not contain private members: {sorted(leaked)}")
+    if candidate.get("alg", "EdDSA") != "EdDSA":
+        raise ValueError(f"agent key alg must be 'EdDSA', got {candidate.get('alg')!r}")
+
+
 def jwk_thumbprint(public_jwk: dict[str, Any]) -> str:
     return _to_jwk(public_jwk).thumbprint()
 

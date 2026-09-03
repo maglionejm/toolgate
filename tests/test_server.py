@@ -96,7 +96,7 @@ class Env:
                         "match": {
                             "upstream": "email",
                             "tool": "send_email",
-                            "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com)"}],
+                            "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com$)"}],
                         },
                     },
                     {
@@ -251,8 +251,16 @@ def test_approval_flow_binds_args(env: Env) -> None:
     assert res.status_code == 202
     approval_id = res.json()["approval_id"]
 
+    poll_path = f"/v1/gate/approvals/{approval_id}"
+    poll_proof = sign_pop_proof(
+        env.agent_keys.private_jwk,
+        htm="GET",
+        htu=f"{PUBLIC_URL}{poll_path}",
+        access_token=token,
+    )
     poll = env.client.get(
-        f"/v1/gate/approvals/{approval_id}", headers={"authorization": f"Bearer {token}"}
+        poll_path,
+        headers={"authorization": f"Bearer {token}", "x-toolgate-proof": poll_proof},
     )
     assert poll.json()["status"] == "pending"
 

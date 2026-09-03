@@ -1,6 +1,9 @@
+import contextlib
 import json
+import os
 import sqlite3
 import time
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel
@@ -60,6 +63,11 @@ class Store:
     def __init__(self, path: str) -> None:
         # autocommit; check_same_thread off so the demo can serve from threads.
         self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+        # The DB holds the control/gate private keys, the admin key, and sealed
+        # secrets — never let it be created world-readable on a shared host.
+        if path != ":memory:" and os.path.exists(path):
+            with contextlib.suppress(OSError):
+                os.chmod(path, 0o600)
         self.db.execute("PRAGMA journal_mode = WAL;")
         self.db.executescript(_SCHEMA)
         # Parsed-document cache: pydantic validation dominates read cost on the
@@ -67,6 +75,7 @@ class Store:
         # so top-level mutation cannot poison the cache.
         self._doc_cache: dict[str, Any] = {}
         self._last_jti_prune = 0.0
+        self._last_approval_prune = 0.0
 
     # -- settings -------------------------------------------------------------
 
@@ -216,9 +225,53 @@ class Store:
     def get_approval(self, approval_id: str) -> ApprovalRequest | None:
         return self._get_model("approval", approval_id, ApprovalRequest)
 
+    def claim_approval_for_execution(self, approval_id: str) -> bool:
+        """Atomically move an approval from 'approved' to 'executing'.
+
+        Returns True only for the caller that won the transition; a second
+        concurrent execute sees the row already past 'approved' and gets False.
+        This is what closes the double-execution race — the status flip happens
+        under SQLite's write lock, before the upstream call, not after it.
+        """
+        self._doc_cache.pop(approval_id, None)
+        cursor = self.db.execute(
+            "UPDATE entities SET json = json_set(json, '$.status', 'executing') "
+            "WHERE id = ? AND kind = 'approval' "
+            "AND json_extract(json, '$.status') = 'approved'",
+            (approval_id,),
+        )
+        return cursor.rowcount == 1
+
+    def revert_approval_claim(self, approval_id: str) -> None:
+        """Release a claim ('executing' -> 'approved') if the upstream call
+        failed, so a legitimate retry is still possible."""
+        self._doc_cache.pop(approval_id, None)
+        self.db.execute(
+            "UPDATE entities SET json = json_set(json, '$.status', 'approved') "
+            "WHERE id = ? AND kind = 'approval' "
+            "AND json_extract(json, '$.status') = 'executing'",
+            (approval_id,),
+        )
+
     def list_approvals(self, tenant_id: str, status: str | None = None) -> list[ApprovalRequest]:
         approvals = [ApprovalRequest.model_validate(d) for d in self._list("approval", tenant_id)]
         return [a for a in approvals if status is None or a.status == status]
+
+    def prune_approvals(self) -> None:
+        """Drop terminal or long-expired approvals so the table cannot grow
+        without bound. Throttled to once a minute; audit history is unaffected
+        (executions are recorded in the signed audit chain, not here)."""
+        now = time.time()
+        if now - self._last_approval_prune <= 60:
+            return
+        self._last_approval_prune = now
+        now_iso = datetime.now(UTC).isoformat()
+        self.db.execute(
+            "DELETE FROM entities WHERE kind = 'approval' AND ("
+            "json_extract(json, '$.status') IN ('executed', 'denied', 'expired') "
+            "OR json_extract(json, '$.expiresAt') < ?)",
+            (now_iso,),
+        )
 
     # -- one-time jtis --------------------------------------------------------------
 

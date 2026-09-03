@@ -67,8 +67,8 @@ Capability token (EdDSA JWT, typ `tg+jwt`), aligned with RFC 8693 / 9396 / 7800:
 | `sub` | **the human principal** the work is for |
 | `act.sub` | **the agent** actually acting (delegation, not impersonation) |
 | `tenant`, `grant_id` | tenancy + the durable grant this token was minted from |
-| `scope` | coarse scopes (space-delimited) |
-| `authorization_details` | RFC 9396-style: exactly which upstreams/tools are reachable |
+| `scope` | coarse OAuth-style scopes (space-delimited) — **advisory metadata only; not independently enforced at the gate** |
+| `authorization_details` | RFC 9396-style: exactly which upstreams/tools are reachable — **the authoritative enforcement bound** |
 | `cnf.jkt` | thumbprint of the agent key that must sign per-call PoP proofs |
 | `txn` | per-task transaction id — the audit join key |
 | `exp` | short TTL (default 120s) with ±15% jitter |

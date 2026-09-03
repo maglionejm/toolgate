@@ -1,6 +1,6 @@
 # Toolgate Documentation
 
-> Version 0.2 · Python reference implementation
+> Version 0.3 · Python reference implementation
 
 | Document | For | Contents |
 | --- | --- | --- |

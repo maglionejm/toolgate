@@ -19,6 +19,7 @@ from toolgate.core import (
     verify_key_from_jwk,
 )
 
+from .ratelimit import SlidingWindowLimiter
 from .store import Store
 from .vault import Vault
 
@@ -33,6 +34,14 @@ class ServerConfig:
     token_ttl_seconds: int = 120
     max_token_ttl_seconds: int = 300
     approval_ttl_seconds: int = 600
+    # Per-grant request-rate ceilings (events per window). Complements the cost
+    # budget, which only bounds total spend, not request frequency.
+    rate_window_seconds: float = 60.0
+    token_rate_limit: int = 60
+    gate_rate_limit: int = 300
+    # When False (production), upstream baseUrls must be https (or loopback http).
+    # Dev/tests set this True so local http mock upstreams keep working.
+    allow_insecure_upstreams: bool = False
 
 
 class AuditLog:
@@ -64,6 +73,8 @@ class AppContext:
     # Parsed once at boot; every token mint/verify on the hot path reuses them.
     control_signing_jwk: jwk.JWK
     control_verify_jwk: jwk.JWK
+    token_limiter: SlidingWindowLimiter
+    gate_limiter: SlidingWindowLimiter
     http: httpx.AsyncClient = field(default_factory=httpx.AsyncClient)
 
 
@@ -91,12 +102,30 @@ def create_app_context(
     issuer: str | None = None,
     admin_key: str | None = None,
     master_key: str | None = None,
+    dev_mode: bool = True,
     http_client: httpx.AsyncClient | None = None,
 ) -> AppContext:
+    """Build the application context.
+
+    Secret handling is fail-closed unless ``dev_mode`` is set: with no vault
+    master key and no admin key supplied (argument or environment), the only
+    fallback is one stored *in the database beside the sealed secrets* — which
+    makes encryption-at-rest decorative and hands an admin credential to anyone
+    with the file. ``dev_mode`` (the library default, for tests and local
+    embedding) keeps that convenience; the server entrypoint passes
+    ``dev_mode=False`` unless ``TOOLGATE_DEV`` is set, so a production boot with
+    missing keys refuses to start rather than silently self-provisioning.
+    """
     store = Store(db_path or os.environ.get("TOOLGATE_DB", "toolgate.db"))
 
     master = master_key or os.environ.get("TOOLGATE_MASTER_KEY")
     if not master:
+        if not dev_mode:
+            raise RuntimeError(
+                "TOOLGATE_MASTER_KEY is required. Refusing to fall back to a key stored "
+                "alongside the sealed secrets. Set TOOLGATE_MASTER_KEY, or set TOOLGATE_DEV=1 "
+                "for local development."
+            )
         master = store.get_setting("dev_master_key") or secrets.token_urlsafe(32)
         store.set_setting("dev_master_key", master)
         print(
@@ -106,6 +135,11 @@ def create_app_context(
 
     admin = admin_key or os.environ.get("TOOLGATE_ADMIN_KEY")
     if not admin:
+        if not dev_mode:
+            raise RuntimeError(
+                "TOOLGATE_ADMIN_KEY is required. Refusing to fall back to a persisted admin "
+                "credential. Set TOOLGATE_ADMIN_KEY, or set TOOLGATE_DEV=1 for local development."
+            )
         admin = store.get_setting("admin_key") or f"tgk_{secrets.token_urlsafe(24)}"
         store.set_setting("admin_key", admin)
 
@@ -115,6 +149,7 @@ def create_app_context(
         gate_audience="toolgate:gate",
         public_url=url,
         admin_key=admin,
+        allow_insecure_upstreams=dev_mode,
     )
 
     gate_keys = _load_or_create_keys(store, "gate")
@@ -128,5 +163,7 @@ def create_app_context(
         gate_keys=gate_keys,
         control_signing_jwk=to_jwk(control_keys.private_jwk),
         control_verify_jwk=to_jwk(control_keys.public_jwk),
+        token_limiter=SlidingWindowLimiter(config.token_rate_limit, config.rate_window_seconds),
+        gate_limiter=SlidingWindowLimiter(config.gate_rate_limit, config.rate_window_seconds),
         http=http_client or httpx.AsyncClient(timeout=30.0),
     )
