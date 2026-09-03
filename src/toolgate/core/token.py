@@ -6,10 +6,11 @@ from datetime import UTC, datetime
 from random import random
 from typing import Any
 
-from jwcrypto import jwk, jwt
+from jwcrypto import jwt
 from pydantic import ValidationError
 
 from .errors import ErrorCodes, ToolgateError
+from .keys import KeyLike, to_jwk
 from .types import AuthorizationDetail, CapabilityClaims
 
 CAPABILITY_TOKEN_TYP = "tg+jwt"
@@ -30,8 +31,13 @@ def _jittered_ttl_seconds(ttl_seconds: int) -> float:
     return max(1.0, ttl_seconds * (1 + (random() * 0.3 - 0.15)))
 
 
+def _kid_of(key: KeyLike) -> str | None:
+    # jwk.JWK implements the Mapping interface, so .get works for both forms.
+    return key.get("kid")
+
+
 def mint_capability_token(
-    control_plane_private_jwk: dict[str, Any],
+    control_plane_private_jwk: KeyLike,
     *,
     issuer: str,
     audience: str,
@@ -45,7 +51,7 @@ def mint_capability_token(
     txn: str | None = None,
     ttl_seconds: int | None = None,
 ) -> MintedToken:
-    key = jwk.JWK(**control_plane_private_jwk)
+    key = to_jwk(control_plane_private_jwk)
     ttl = ttl_seconds if ttl_seconds is not None else DEFAULT_TOKEN_TTL_SECONDS
     jti = secrets.token_urlsafe(16)
     txn = txn or f"txn_{secrets.token_urlsafe(12)}"
@@ -54,8 +60,9 @@ def mint_capability_token(
     exp = now + (ttl if ttl < 0 else _jittered_ttl_seconds(ttl))
 
     header: dict[str, Any] = {"alg": "EdDSA", "typ": CAPABILITY_TOKEN_TYP}
-    if control_plane_private_jwk.get("kid"):
-        header["kid"] = control_plane_private_jwk["kid"]
+    kid = _kid_of(control_plane_private_jwk)
+    if kid:
+        header["kid"] = kid
 
     token = jwt.JWT(
         header=header,
@@ -88,14 +95,14 @@ def mint_capability_token(
 
 
 def verify_capability_token(
-    control_plane_public_jwk: dict[str, Any],
+    control_plane_public_jwk: KeyLike,
     token: str,
     *,
     issuer: str,
     audience: str,
     clock_tolerance_seconds: int = 0,
 ) -> CapabilityClaims:
-    key = jwk.JWK(**control_plane_public_jwk)
+    key = to_jwk(control_plane_public_jwk)
     verifier = jwt.JWT(
         check_claims={"iss": issuer, "aud": audience, "exp": None, "iat": None, "jti": None}
     )

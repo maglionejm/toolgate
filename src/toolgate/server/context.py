@@ -4,6 +4,7 @@ import secrets
 from dataclasses import dataclass, field
 
 import httpx
+from jwcrypto import jwk
 
 from toolgate.core import (
     AuditRecord,
@@ -12,7 +13,10 @@ from toolgate.core import (
     KeyPairJwk,
     append_audit_record,
     generate_ed25519_key_pair,
+    signing_key_from_jwk,
+    to_jwk,
     verify_audit_chain,
+    verify_key_from_jwk,
 )
 
 from .store import Store
@@ -34,17 +38,19 @@ class ServerConfig:
 class AuditLog:
     def __init__(self, store: Store, gate_keys: KeyPairJwk) -> None:
         self._store = store
-        self._keys = gate_keys
+        # Every gate decision signs a record: parse the Ed25519 keys once.
+        self._signing_key = signing_key_from_jwk(gate_keys.private_jwk)
+        self._verify_key = verify_key_from_jwk(gate_keys.public_jwk)
         self._last: AuditRecord | None = store.last_audit()
 
     def record(self, record_input: AuditRecordInput) -> AuditRecord:
-        record = append_audit_record(self._last, record_input, self._keys.private_jwk)
+        record = append_audit_record(self._last, record_input, self._signing_key)
         self._store.append_audit(record)
         self._last = record
         return record
 
     def verify(self) -> ChainVerification:
-        return verify_audit_chain(self._store.list_audit(), self._keys.public_jwk)
+        return verify_audit_chain(self._store.list_audit(), self._verify_key)
 
 
 @dataclass
@@ -55,6 +61,9 @@ class AppContext:
     config: ServerConfig
     control_keys: KeyPairJwk
     gate_keys: KeyPairJwk
+    # Parsed once at boot; every token mint/verify on the hot path reuses them.
+    control_signing_jwk: jwk.JWK
+    control_verify_jwk: jwk.JWK
     http: httpx.AsyncClient = field(default_factory=httpx.AsyncClient)
 
 
@@ -109,12 +118,15 @@ def create_app_context(
     )
 
     gate_keys = _load_or_create_keys(store, "gate")
+    control_keys = _load_or_create_keys(store, "control")
     return AppContext(
         store=store,
         vault=Vault(master),
         audit=AuditLog(store, gate_keys),
         config=config,
-        control_keys=_load_or_create_keys(store, "control"),
+        control_keys=control_keys,
         gate_keys=gate_keys,
+        control_signing_jwk=to_jwk(control_keys.private_jwk),
+        control_verify_jwk=to_jwk(control_keys.public_jwk),
         http=http_client or httpx.AsyncClient(timeout=30.0),
     )

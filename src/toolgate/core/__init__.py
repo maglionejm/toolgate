@@ -15,16 +15,20 @@ from .audit import (
     append_audit_record,
     hash_args,
     sha256_hex,
+    signing_key_from_jwk,
     verify_audit_chain,
+    verify_key_from_jwk,
 )
 from .canonical import canonical_json
 from .errors import ErrorCodes, ToolgateError
 from .ids import new_id
 from .keys import (
+    KeyLike,
     KeyPairJwk,
     generate_ed25519_key_pair,
     jwk_thumbprint,
     public_jwk_from_private,
+    to_jwk,
 )
 from .policy import (
     BudgetCheck,
@@ -103,6 +107,7 @@ __all__ = [
     "DelegationGrant",
     "ErrorCodes",
     "HeaderCredential",
+    "KeyLike",
     "KeyPairJwk",
     "MintedToken",
     "Policy",
@@ -137,8 +142,11 @@ __all__ = [
     "sha256_hex",
     "sign_client_assertion",
     "sign_pop_proof",
+    "signing_key_from_jwk",
+    "to_jwk",
     "verify_audit_chain",
     "verify_capability_token",
     "verify_client_assertion",
+    "verify_key_from_jwk",
     "verify_pop_proof",
 ]

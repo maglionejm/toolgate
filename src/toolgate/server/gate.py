@@ -215,7 +215,7 @@ async def _authenticate_token_only(ctx: AppContext, request: Request) -> AuthedC
         raise ToolgateError(ErrorCodes.TOKEN_INVALID, "missing bearer capability token")
     token = auth[7:].strip()
     claims = verify_capability_token(
-        ctx.control_keys.public_jwk,
+        ctx.control_verify_jwk,
         token,
         issuer=ctx.config.issuer,
         audience=ctx.config.gate_audience,

@@ -33,5 +33,15 @@ def public_jwk_from_private(private_jwk: dict[str, Any]) -> dict[str, Any]:
     return {k: private_jwk[k] for k in ("kty", "crv", "x")}
 
 
+KeyLike = dict[str, Any] | jwk.JWK
+
+
+def to_jwk(key: KeyLike) -> jwk.JWK:
+    """Coerce a JWK dict into a parsed key. Long-lived callers (server context,
+    SDK client) parse once and pass the jwk.JWK through hot paths; dict input
+    stays supported for one-shot use."""
+    return key if isinstance(key, jwk.JWK) else jwk.JWK(**key)
+
+
 def _to_jwk(jwk_dict: dict[str, Any]) -> jwk.JWK:
     return jwk.JWK(**jwk_dict)

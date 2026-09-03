@@ -96,9 +96,10 @@ def main() -> None:
         serve_in_thread(make_upstreams(), UPSTREAM_PORT),
     ]
     admin = {"x-toolgate-admin-key": ctx.config.admin_key}
+    admin_http = httpx.Client(base_url=GATE_URL, headers=admin, timeout=10.0)
 
     def admin_post(path: str, body: dict[str, Any]) -> dict[str, Any]:
-        res = httpx.post(f"{GATE_URL}{path}", headers=admin, json=body)
+        res = admin_http.post(path, json=body)
         res.raise_for_status()
         return res.json()
 
@@ -255,13 +256,11 @@ def main() -> None:
         line("REVOKED", f"{err.code}: live token died with the grant, no TTL wait")
 
     section("6. Audit — every decision above is in a signed hash chain")
-    verification = httpx.get(f"{GATE_URL}/v1/control/audit/verify", headers=admin).json()
+    verification = admin_http.get("/v1/control/audit/verify").json()
     status = "VALID" if verification["valid"] else "BROKEN"
     line("AUDIT", f"chain of {verification['length']} records — verification: {status}")
 
-    records = httpx.get(
-        f"{GATE_URL}/v1/control/audit", headers=admin, params={"tenantId": tenant["id"]}
-    ).json()
+    records = admin_http.get("/v1/control/audit", params={"tenantId": tenant["id"]}).json()
     for r in records:
         line(
             "TRACE",
