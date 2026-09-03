@@ -73,6 +73,10 @@ if isinstance(result, PendingApproval):
 | `toolgate.sdk` | Agent-side client: token exchange, signed calls, approval flow, typed errors |
 | `toolgate.demo` | End-to-end scenario (`uv run toolgate-demo`) |
 
+## Documentation
+
+Full suite in [`docs/`](docs/README.md): [Quickstart](docs/QUICKSTART.md) · [API Reference](docs/reference/API.md) · [Token Spec](docs/TOKEN-SPEC.md) · [Security Model](docs/SECURITY.md) · [Deployment](docs/DEPLOYMENT.md) · [Operations](docs/OPERATIONS.md)
+
 ## Design
 
 - `docs/ARCHITECTURE.md` — components, token design, threat model
