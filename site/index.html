@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Toolgate — your agents never touch a credential</title>
+<meta name="description" content="The capability control plane for AI agents. Scoped tokens, policy enforcement, server-side credential injection, and a signed audit chain.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<nav class="nav">
+  <a class="wordmark" href="#top">TOOLGATE<span class="wordmark-cursor">▮</span></a>
+  <div class="nav-links">
+    <a href="#gate">Simulation</a>
+    <a href="#integrate">Integrate</a>
+    <a href="#token">Token</a>
+    <a href="https://github.com/maglionejm/toolgate/blob/main/docs/README.md">Docs</a>
+    <a class="nav-cta" href="https://github.com/maglionejm/toolgate">GitHub ↗</a>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-copy reveal">
+    <p class="kicker"><span class="seq">rec 001</span> capability control plane for ai agents</p>
+    <h1>Your agents never<br>touch a credential.</h1>
+    <p class="lede">Toolgate sits between agents and their tools. Agents hold one Ed25519 key — nothing else. Every call is policy-checked, budget-metered, executed with credentials injected server-side, and sealed into a signed audit chain.</p>
+    <div class="cta-row">
+      <a class="btn btn-primary" href="https://github.com/maglionejm/toolgate/blob/main/docs/QUICKSTART.md">Quickstart — 10 min</a>
+      <a class="btn" href="https://github.com/maglionejm/toolgate/blob/main/docs/reference/API.md">API reference</a>
+    </div>
+    <dl class="hero-stats">
+      <div><dt>≤300s</dt><dd>token lifetime, jittered</dd></div>
+      <div><dt>0</dt><dd>secrets held by agents</dd></div>
+      <div><dt>100%</dt><dd>decisions audited, denials included</dd></div>
+    </dl>
+  </div>
+  <div class="hero-terminal reveal reveal-2">
+    <div class="term" id="hero-term">
+      <div class="term-bar"><span></span><span></span><span></span><em>toolgate-demo</em></div>
+      <pre class="term-body" id="term-body"></pre>
+    </div>
+  </div>
+</header>
+
+<section class="pipeline-band reveal">
+  <p class="band-label">every call, in order</p>
+  <ol class="pipeline">
+    <li><b>verify</b><i>token + one-time proof</i></li>
+    <li><b>decide</b><i>bounds → policy → default deny</i></li>
+    <li><b>budget</b><i>atomic charge</i></li>
+    <li><b>inject</b><i>credential from vault</i></li>
+    <li><b>execute</b><i>upstream call</i></li>
+    <li><b>audit</b><i>signed, hash-chained</i></li>
+  </ol>
+</section>
+
+<section class="section" id="gate">
+  <div class="section-head reveal">
+    <p class="kicker"><span class="seq">rec 002</span> interactive · runs entirely in your browser</p>
+    <h2>Send a call through the gate.</h2>
+    <p class="section-lede">This is the real decision logic and a real SHA-256 hash chain, computed live with Web Crypto. Pick what the agent tries to do — then try to tamper with the record of it.</p>
+  </div>
+
+  <div class="sim reveal">
+    <div class="sim-left">
+      <p class="panel-label">agent request</p>
+      <div class="scenarios" id="scenarios"></div>
+      <div class="sim-budget">
+        <p class="panel-label">delegation budget</p>
+        <div class="budget-track"><div class="budget-fill" id="budget-fill"></div></div>
+        <p class="budget-num mono" id="budget-num">8 / 8 units</p>
+        <button class="btn btn-ghost btn-sm" id="reset-sim">reset delegation</button>
+      </div>
+      <div class="sim-policy">
+        <p class="panel-label">active policy · first match wins</p>
+        <ol class="policy-rules" id="policy-rules">
+          <li data-rule="never-delete"><span class="fx deny">deny</span> crm · delete_*</li>
+          <li data-rule="external-email"><span class="fx approve">approval</span> email · send_email · to ∉ acme.com</li>
+          <li data-rule="internal-ok"><span class="fx allow">allow</span> email · send_email</li>
+          <li data-rule="crm-ok"><span class="fx allow">allow</span> crm · *</li>
+          <li data-rule="default"><span class="fx deny">deny</span> anything else</li>
+        </ol>
+      </div>
+    </div>
+
+    <div class="sim-right">
+      <p class="panel-label">gate pipeline</p>
+      <ol class="stages" id="stages">
+        <li data-stage="verify"><b>verify</b><span class="stage-note" id="note-verify"></span></li>
+        <li data-stage="bounds"><b>token bounds</b><span class="stage-note" id="note-bounds"></span></li>
+        <li data-stage="policy"><b>policy</b><span class="stage-note" id="note-policy"></span></li>
+        <li data-stage="budget"><b>budget</b><span class="stage-note" id="note-budget"></span></li>
+        <li data-stage="execute"><b>inject + execute</b><span class="stage-note" id="note-execute"></span></li>
+      </ol>
+      <div class="verdict mono" id="verdict" hidden></div>
+      <div class="approval-box" id="approval-box" hidden>
+        <p>Parked. The human decides on <em>exactly</em> these arguments — the agent can't swap them afterwards.</p>
+        <div class="cta-row">
+          <button class="btn btn-primary btn-sm" id="approve-btn">Approve as Sam</button>
+          <button class="btn btn-sm" id="deny-btn">Deny</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="chain reveal" id="chain-wrap">
+    <div class="chain-head">
+      <p class="panel-label">audit chain · sha-256, each record seals the one before it</p>
+      <div class="chain-actions">
+        <button class="btn btn-sm" id="tamper-btn" disabled>tamper with record 2</button>
+        <button class="btn btn-primary btn-sm" id="verify-btn" disabled>verify chain</button>
+      </div>
+    </div>
+    <div class="chain-body" id="chain-body">
+      <p class="chain-empty mono">— no records yet. send a call through the gate. —</p>
+    </div>
+    <p class="chain-verdict mono" id="chain-verdict"></p>
+  </div>
+</section>
+
+<section class="section" id="integrate">
+  <div class="section-head reveal">
+    <p class="kicker"><span class="seq">rec 003</span> integrate</p>
+    <h2>Delegate. Call. Approve.<br>Three moves, fully audited.</h2>
+  </div>
+  <div class="code-cols reveal">
+    <figure class="code-card">
+      <figcaption><span class="step-n">01</span> The human delegates bounded authority</figcaption>
+<pre><code><span class="c"># POST /v1/control/grants</span>
+{
+  <span class="k">"userId"</span>: <span class="s">"usr_sam"</span>, <span class="k">"agentId"</span>: <span class="s">"agt_assistant"</span>,
+  <span class="k">"authorization"</span>: [{<span class="k">"upstream"</span>: <span class="s">"crm"</span>, <span class="k">"tools"</span>: [<span class="s">"*"</span>]}],
+  <span class="k">"budgetMaxUnits"</span>: <span class="n">100</span>, <span class="k">"policyId"</span>: <span class="s">"pol_default"</span>
+}</code></pre>
+    </figure>
+    <figure class="code-card">
+      <figcaption><span class="step-n">02</span> The agent calls tools — with zero secrets</figcaption>
+<pre><code><span class="c"># pip install toolgate</span>
+client = ToolgateClient(
+    agent_private_jwk=key,  <span class="c"># its only secret</span>
+    grant_id=<span class="s">"grt_..."</span>, base_url=GATE)
+
+r = client.call(<span class="s">"crm"</span>, <span class="s">"read_contact"</span>,
+                {<span class="s">"contactId"</span>: <span class="s">"c-014"</span>})</code></pre>
+    </figure>
+    <figure class="code-card">
+      <figcaption><span class="step-n">03</span> Risky calls park for a human</figcaption>
+<pre><code>parked = client.call(<span class="s">"email"</span>, <span class="s">"send_email"</span>,
+                     {<span class="s">"to"</span>: <span class="s">"cfo@globex.com"</span>, ...})
+<span class="c"># 202 pending_approval — Sam sees the exact args</span>
+done = client.wait_for_approval(parked.approval_id)</code></pre>
+    </figure>
+  </div>
+</section>
+
+<section class="section" id="token">
+  <div class="section-head reveal">
+    <p class="kicker"><span class="seq">rec 004</span> token anatomy</p>
+    <h2>Delegation, not impersonation.</h2>
+    <p class="section-lede">RFC 8693 semantics: <code>sub</code> stays the human, <code>act.sub</code> is the agent. Hover a claim.</p>
+  </div>
+  <div class="token-grid reveal">
+    <pre class="token-json mono" id="token-json"><code>{
+  <span data-claim="sub">"sub": "usr_sam",</span>
+  <span data-claim="act">"act": { "sub": "agt_assistant" },</span>
+  <span data-claim="aud">"aud": "toolgate:gate",</span>
+  <span data-claim="authz">"authorization_details": [
+    { "upstream": "crm", "tools": ["*"] }
+  ],</span>
+  <span data-claim="cnf">"cnf": { "jkt": "kUx0...Q7w" },</span>
+  <span data-claim="txn">"txn": "txn_9f21",</span>
+  <span data-claim="exp">"exp": 1788427121   // ~120s, jittered</span>
+}</code></pre>
+    <div class="claim-notes" id="claim-notes">
+      <p data-claim="sub"><b>sub</b> — the human whose authority is exercised. Never the agent.</p>
+      <p data-claim="act"><b>act.sub</b> — who is actually acting. Audit records carry both, forever distinguishable.</p>
+      <p data-claim="aud"><b>aud</b> — audience-bound; rejected anywhere but the gate. No token passthrough.</p>
+      <p data-claim="authz"><b>authorization_details</b> — the reachable surface (RFC 9396). Outside it, policy never even runs: denied.</p>
+      <p data-claim="cnf"><b>cnf.jkt</b> — thumbprint of the agent key that must sign a one-time proof per call. A stolen token is inert.</p>
+      <p data-claim="txn"><b>txn</b> — per-task id; the join key across every audit record it produced.</p>
+      <p data-claim="exp"><b>exp</b> — minutes, not months. Jittered so harvested batches never expire together.</p>
+    </div>
+  </div>
+</section>
+
+<section class="section guarantees">
+  <div class="section-head reveal">
+    <p class="kicker"><span class="seq">rec 005</span> guarantees</p>
+    <h2>What an attacker gets.</h2>
+  </div>
+  <div class="g-cards reveal">
+    <article><h3>Steals the token</h3><p>Nothing. Every call needs a fresh proof signed by the agent key named in <code>cnf.jkt</code>. Replays are single-use-jti dead.</p><p class="g-tag mono">TG_PROOF_INVALID</p></article>
+    <article><h3>Steals token + key</h3><p>A bounded box: authorized tools ∩ policy ∩ remaining budget ∩ ≤300s. And revocation kills live tokens on the next call.</p><p class="g-tag mono">TG_REVOKED</p></article>
+    <article><h3>Rewrites history</h3><p>Every decision — denials included — is hash-chained and Ed25519-signed. Edit, remove, or reorder one record and verification names the exact breakpoint.</p><p class="g-tag mono">valid: false, broken_at_seq: n</p></article>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="foot-chain mono" id="foot-chain">chain verified · 005 records · genesis 000000…0000</div>
+  <div class="foot-links">
+    <a href="https://github.com/maglionejm/toolgate/blob/main/docs/QUICKSTART.md">Quickstart</a>
+    <a href="https://github.com/maglionejm/toolgate/blob/main/docs/reference/API.md">API</a>
+    <a href="https://github.com/maglionejm/toolgate/blob/main/docs/TOKEN-SPEC.md">Token spec</a>
+    <a href="https://github.com/maglionejm/toolgate/blob/main/docs/SECURITY.md">Security model</a>
+    <a href="https://github.com/maglionejm/toolgate">GitHub</a>
+  </div>
+  <p class="foot-note">Toolgate · capability control plane for AI agents · agents never touch a credential</p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
