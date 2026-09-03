@@ -1,0 +1,130 @@
+# Quickstart
+
+> Toolgate 0.2 · Last updated 2026-09-03 · Audience: application engineers integrating an agent
+
+This guide takes you from zero to a policy-gated, human-approvable, fully audited agent tool call in about ten minutes. Everything runs locally.
+
+## 1. Install and boot
+
+```bash
+uv sync
+uv run toolgate-server
+# [toolgate] control plane + gate listening on :8484
+# [toolgate] admin key: tgk_...        <- copy this
+```
+
+Export for convenience:
+
+```bash
+export TG=http://localhost:8484
+export TG_ADMIN="x-toolgate-admin-key: tgk_..."
+```
+
+## 2. Register your tenant, user, and agent
+
+The agent generates a keypair; **only the public half is ever sent to Toolgate**.
+
+```python
+from toolgate.sdk import generate_ed25519_key_pair
+keys = generate_ed25519_key_pair()
+print(keys.public_jwk)   # register this
+# keys.private_jwk stays with the agent — the only secret it will ever hold
+```
+
+```bash
+curl -s $TG/v1/control/tenants  -H "$TG_ADMIN" -d '{"name":"Acme"}'
+curl -s $TG/v1/control/users    -H "$TG_ADMIN" -d '{"tenantId":"tnt_...","displayName":"Sam"}'
+curl -s $TG/v1/control/agents   -H "$TG_ADMIN" \
+  -d '{"tenantId":"tnt_...","name":"assistant","publicJwk":{...}}'
+```
+
+## 3. Register an upstream with its real credential
+
+The secret is sealed into the vault on write and never appears in any response, token, or log again.
+
+```bash
+curl -s $TG/v1/control/upstreams -H "$TG_ADMIN" -d '{
+  "tenantId": "tnt_...",
+  "name": "crm",
+  "baseUrl": "https://api.your-crm.example",
+  "credential": {"mode": "bearer", "secret": "LIVE-CRM-KEY"},
+  "tools": [
+    {"name": "read_contact", "costUnits": 1},
+    {"name": "update_contact", "sideEffecting": true, "costUnits": 2}
+  ]
+}'
+```
+
+## 4. Write a policy
+
+Ordered rules, first match wins, no match = deny.
+
+```bash
+curl -s $TG/v1/control/policies -H "$TG_ADMIN" -d '{
+  "tenantId": "tnt_...",
+  "name": "assistant-policy",
+  "rules": [
+    {"effect": "require_approval", "match": {"tool": "update_contact"}},
+    {"effect": "allow", "match": {"upstream": "crm"}}
+  ]
+}'
+```
+
+## 5. Delegate
+
+Sam grants the agent bounded authority: these tools, this budget, this policy, for 24 hours.
+
+```bash
+curl -s $TG/v1/control/grants -H "$TG_ADMIN" -d '{
+  "tenantId": "tnt_...", "userId": "usr_...", "agentId": "agt_...",
+  "policyId": "pol_...",
+  "authorization": [{"upstream": "crm", "tools": ["*"]}],
+  "budgetMaxUnits": 100
+}'
+```
+
+## 6. Call a tool from the agent
+
+```python
+from toolgate.sdk import ToolgateClient, PendingApproval
+
+client = ToolgateClient(
+    base_url="http://localhost:8484",
+    agent_id="agt_...",
+    agent_private_jwk=keys.private_jwk,
+    grant_id="grt_...",
+)
+
+result = client.call("crm", "read_contact", {"contactId": "c-001"})
+print(result.result)          # executed: policy allowed it
+
+parked = client.call("crm", "update_contact", {"contactId": "c-001", "phone": "+34..."})
+assert isinstance(parked, PendingApproval)   # side-effecting -> human required
+```
+
+Approve it (your app's approval UI calls this; here, curl):
+
+```bash
+curl -s $TG/v1/control/approvals/apr_.../decide -H "$TG_ADMIN" \
+  -d '{"decision": "approve", "decidedBy": "usr_..."}'
+```
+
+```python
+executed = client.wait_for_approval(parked.approval_id)
+print(executed.result)        # ran with exactly the approved arguments
+```
+
+## 7. Verify the audit trail
+
+```bash
+curl -s $TG/v1/control/audit/verify -H "$TG_ADMIN"
+# {"valid": true, "length": 4}
+```
+
+## Where to go next
+
+- [API reference](reference/API.md) — every endpoint, field, and error code
+- [Token specification](TOKEN-SPEC.md) — what's inside a capability token and a call proof
+- [Security model](SECURITY.md) — threat matrix and guarantees
+- [Deployment](DEPLOYMENT.md) — production configuration and Cloud Run
+- [Operations](OPERATIONS.md) — revocation, approvals, audit runbooks
