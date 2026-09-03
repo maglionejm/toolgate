@@ -91,6 +91,19 @@ class AgentIdentity(BaseModel):
     createdAt: str
 
 
+class Operator(BaseModel):
+    """A human operator of the control plane. Replaces the anonymous shared
+    admin key: every control-plane mutation is attributed to an operator id in
+    the audit chain. Only the SHA-256 of the operator key is stored."""
+
+    id: str
+    name: str = Field(min_length=1)
+    role: Literal["owner", "approver", "auditor"]
+    keyHash: str
+    status: Literal["active", "disabled"]
+    createdAt: str
+
+
 # ---------------------------------------------------------------------------
 # Authorization details (RFC 9396-flavored) and delegation grants
 # ---------------------------------------------------------------------------
@@ -252,7 +265,9 @@ class CapabilityClaims(BaseModel):
 # ---------------------------------------------------------------------------
 
 DecisionEffect = Literal["allow", "deny", "require_approval"]
-DecisionSource = Literal["token_bounds", "rule", "constraint", "budget", "approval", "default"]
+DecisionSource = Literal[
+    "token_bounds", "rule", "constraint", "budget", "approval", "default", "operator"
+]
 
 
 class AuditDecision(BaseModel):

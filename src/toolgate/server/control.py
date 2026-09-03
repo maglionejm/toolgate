@@ -1,26 +1,39 @@
+import hashlib
 import hmac
 import ipaddress
+import secrets as _secrets
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel, Field
 
 from toolgate.core import (
     AgentIdentity,
+    AuditAction,
+    AuditActor,
+    AuditDecision,
+    AuditRecordInput,
+    AuditResult,
     AuthorizationDetail,
     Budget,
     DelegationGrant,
     ErrorCodes,
+    Operator,
     Policy,
     PolicyRule,
     Tenant,
+    ToolCallContext,
     ToolDef,
     ToolgateError,
     Upstream,
     User,
+    decide,
+    evaluate_policy,
+    hash_args,
     jwk_thumbprint,
     mint_capability_token,
     new_id,
@@ -126,7 +139,23 @@ class CreateGrant(BaseModel):
 
 class DecideApproval(BaseModel):
     decision: Literal["approve", "deny"]
-    decidedBy: str = Field(min_length=1)
+    # Defaults to the authenticated operator; explicit override stays possible
+    # for integrations that act on behalf of a named user.
+    decidedBy: str | None = None
+
+
+class CreateOperator(BaseModel):
+    name: str = Field(min_length=1)
+    role: Literal["owner", "approver", "auditor"]
+
+
+class SimulateCall(BaseModel):
+    upstream: str = Field(min_length=1)
+    tool: str = Field(min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    costUnits: int = Field(default=1, ge=0)
+    tainted: bool = False
+    authorization: list[AuthorizationDetail] | None = None
 
 
 class RotateKeys(BaseModel):
@@ -153,29 +182,96 @@ def _require_tenant(ctx: AppContext, tenant_id: str) -> None:
         raise _not_found("tenant", tenant_id)
 
 
+_ROLE_RANK = {"auditor": 0, "approver": 1, "owner": 2}
+
+
+@dataclass(frozen=True)
+class Principal:
+    id: str
+    name: str
+    role: str
+
+
 def control_router(ctx: AppContext) -> APIRouter:
     router = APIRouter(prefix="/v1/control")
 
-    async def require_admin(
-        x_toolgate_admin_key: Annotated[str | None, Header()] = None,
-    ) -> None:
+    def _resolve_principal(
+        operator_key: str | None, admin_key: str | None
+    ) -> Principal:
+        if operator_key:
+            digest = hashlib.sha256(operator_key.encode()).hexdigest()
+            op = ctx.store.find_operator_by_key_hash(digest)
+            if op is None or op.status != "active":
+                raise ToolgateError(ErrorCodes.TOKEN_INVALID, "unknown or disabled operator key")
+            return Principal(id=op.id, name=op.name, role=op.role)
         # Constant-time compare so the most sensitive credential in the system
-        # is not subject to byte-by-byte timing discrimination.
-        if x_toolgate_admin_key is None or not hmac.compare_digest(
-            x_toolgate_admin_key, ctx.config.admin_key
-        ):
-            raise ToolgateError(ErrorCodes.TOKEN_INVALID, "missing or wrong admin key")
+        # is not subject to byte-by-byte timing discrimination. The static admin
+        # key is the audited break-glass path, not the daily driver.
+        if admin_key is not None and hmac.compare_digest(admin_key, ctx.config.admin_key):
+            return Principal(id="op_breakglass", name="break-glass admin key", role="owner")
+        raise ToolgateError(ErrorCodes.TOKEN_INVALID, "missing or wrong operator/admin key")
 
-    admin_dep = [Depends(require_admin)]
+    def require_role(min_role: str) -> list[Any]:
+        async def dep(
+            request: Request,
+            x_toolgate_operator_key: Annotated[str | None, Header()] = None,
+            x_toolgate_admin_key: Annotated[str | None, Header()] = None,
+        ) -> None:
+            principal = _resolve_principal(x_toolgate_operator_key, x_toolgate_admin_key)
+            if _ROLE_RANK[principal.role] < _ROLE_RANK[min_role]:
+                raise ToolgateError(
+                    ErrorCodes.DENIED,
+                    f"role {principal.role} cannot perform {min_role}-level operations",
+                )
+            request.state.principal = principal
 
-    @router.post("/tenants", status_code=201, dependencies=admin_dep)
-    async def create_tenant(body: CreateTenant) -> Tenant:
+        return [Depends(dep)]
+
+    owner_dep = require_role("owner")
+    approver_dep = require_role("approver")
+    auditor_dep = require_role("auditor")
+
+    def _ops_audit(
+        request: Request, operation: str, payload: dict[str, Any], tenant_id: str = "-"
+    ) -> None:
+        """Control-plane mutations land in the same signed chain as gate calls,
+        attributed to the operator who performed them."""
+        principal: Principal = request.state.principal
+        ctx.audit.record(
+            AuditRecordInput(
+                id=new_id("evt"),
+                tenantId=tenant_id,
+                ts=_now(),
+                actor=AuditActor(
+                    agentId="control-plane",
+                    userId=principal.id,
+                    grantId="-",
+                    tokenJti="-",
+                ),
+                action=AuditAction(
+                    callId=new_id("call"),
+                    upstream="control",
+                    tool=operation,
+                    argsHash=hash_args(payload),
+                ),
+                decision=AuditDecision(
+                    effect="allow",
+                    source="operator",
+                    reason=f"{operation} by {principal.name} ({principal.id})",
+                ),
+                result=AuditResult(status="executed"),
+            )
+        )
+
+    @router.post("/tenants", status_code=201, dependencies=owner_dep)
+    async def create_tenant(body: CreateTenant, request: Request) -> Tenant:
         tenant = Tenant(id=new_id("tnt"), name=body.name, createdAt=_now())
         ctx.store.put_tenant(tenant)
+        _ops_audit(request, "tenants.create", {"id": tenant.id}, tenant.id)
         return tenant
 
-    @router.post("/users", status_code=201, dependencies=admin_dep)
-    async def create_user(body: CreateUser) -> User:
+    @router.post("/users", status_code=201, dependencies=owner_dep)
+    async def create_user(body: CreateUser, request: Request) -> User:
         _require_tenant(ctx, body.tenantId)
         user = User(
             id=new_id("usr"),
@@ -185,10 +281,11 @@ def control_router(ctx: AppContext) -> APIRouter:
             createdAt=_now(),
         )
         ctx.store.put_user(user)
+        _ops_audit(request, "users.create", {"id": user.id}, body.tenantId)
         return user
 
-    @router.post("/agents", status_code=201, dependencies=admin_dep)
-    async def create_agent(body: CreateAgent) -> AgentIdentity:
+    @router.post("/agents", status_code=201, dependencies=owner_dep)
+    async def create_agent(body: CreateAgent, request: Request) -> AgentIdentity:
         _require_tenant(ctx, body.tenantId)
         # The agent proves possession of one Ed25519 private key. Reject anything
         # else here so a symmetric/other key can never be stored and later used
@@ -206,10 +303,14 @@ def control_router(ctx: AppContext) -> APIRouter:
             createdAt=_now(),
         )
         ctx.store.put_agent(agent)
+        _ops_audit(
+            request, "agents.register", {"id": agent.id, "jkt": agent.publicJwk.get("kid")},
+            body.tenantId,
+        )
         return agent
 
-    @router.post("/upstreams", status_code=201, dependencies=admin_dep)
-    async def create_upstream(body: CreateUpstream) -> Upstream:
+    @router.post("/upstreams", status_code=201, dependencies=owner_dep)
+    async def create_upstream(body: CreateUpstream, request: Request) -> Upstream:
         _require_tenant(ctx, body.tenantId)
         _validate_upstream_base_url(
             body.baseUrl, allow_insecure=ctx.config.allow_insecure_upstreams
@@ -240,10 +341,11 @@ def control_router(ctx: AppContext) -> APIRouter:
             createdAt=_now(),
         )
         ctx.store.put_upstream(upstream)
+        _ops_audit(request, "upstreams.add", {"id": upstream.id, "name": body.name}, body.tenantId)
         return upstream
 
-    @router.post("/policies", status_code=201, dependencies=admin_dep)
-    async def create_policy(body: CreatePolicy) -> Policy:
+    @router.post("/policies", status_code=201, dependencies=owner_dep)
+    async def create_policy(body: CreatePolicy, request: Request) -> Policy:
         _require_tenant(ctx, body.tenantId)
         policy = Policy(
             id=new_id("pol"),
@@ -253,10 +355,11 @@ def control_router(ctx: AppContext) -> APIRouter:
             createdAt=_now(),
         )
         ctx.store.put_policy(policy)
+        _ops_audit(request, "policies.create", {"id": policy.id}, body.tenantId)
         return policy
 
-    @router.post("/grants", status_code=201, dependencies=admin_dep)
-    async def create_grant(body: CreateGrant) -> DelegationGrant:
+    @router.post("/grants", status_code=201, dependencies=owner_dep)
+    async def create_grant(body: CreateGrant, request: Request) -> DelegationGrant:
         _require_tenant(ctx, body.tenantId)
         if not ctx.store.get_user(body.userId):
             raise _not_found("user", body.userId)
@@ -278,52 +381,59 @@ def control_router(ctx: AppContext) -> APIRouter:
             createdAt=_now(),
         )
         ctx.store.put_grant(grant)
+        _ops_audit(
+            request,
+            "grants.create",
+            {"id": grant.id, "agent": body.agentId, "budget": body.budgetMaxUnits},
+            body.tenantId,
+        )
         return grant
 
-    @router.get("/tenants", dependencies=admin_dep)
+    @router.get("/tenants", dependencies=auditor_dep)
     async def list_tenants() -> list[Tenant]:
         return ctx.store.list_tenants()
 
-    @router.get("/users", dependencies=admin_dep)
+    @router.get("/users", dependencies=auditor_dep)
     async def list_users(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
         users = ctx.store.list_users(tenantId)
         return [u.model_dump(mode="json", exclude_none=True) for u in users]
 
-    @router.get("/agents", dependencies=admin_dep)
+    @router.get("/agents", dependencies=auditor_dep)
     async def list_agents(tenantId: Annotated[str, Query()]) -> list[AgentIdentity]:
         return ctx.store.list_agents(tenantId)
 
-    @router.get("/upstreams", dependencies=admin_dep)
+    @router.get("/upstreams", dependencies=auditor_dep)
     async def list_upstreams(tenantId: Annotated[str, Query()]) -> list[Upstream]:
         return ctx.store.list_upstreams(tenantId)
 
-    @router.get("/policies", dependencies=admin_dep)
+    @router.get("/policies", dependencies=auditor_dep)
     async def list_policies(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
         return [
             p.model_dump(mode="json", exclude_none=True) for p in ctx.store.list_policies(tenantId)
         ]
 
-    @router.get("/grants", dependencies=admin_dep)
+    @router.get("/grants", dependencies=auditor_dep)
     async def list_grants(tenantId: Annotated[str, Query()]) -> list[DelegationGrant]:
         return ctx.store.list_grants(tenantId)
 
-    @router.get("/grants/{grant_id}", dependencies=admin_dep)
+    @router.get("/grants/{grant_id}", dependencies=auditor_dep)
     async def get_grant(grant_id: str) -> DelegationGrant:
         grant = ctx.store.get_grant(grant_id)
         if not grant:
             raise _not_found("grant", grant_id)
         return grant
 
-    @router.post("/grants/{grant_id}/revoke", dependencies=admin_dep)
-    async def revoke_grant(grant_id: str) -> dict[str, str]:
+    @router.post("/grants/{grant_id}/revoke", dependencies=owner_dep)
+    async def revoke_grant(grant_id: str, request: Request) -> dict[str, str]:
         grant = ctx.store.get_grant(grant_id)
         if not grant:
             raise _not_found("grant", grant_id)
         grant.status = "revoked"
         ctx.store.put_grant(grant)
+        _ops_audit(request, "grants.revoke", {"id": grant.id}, grant.tenantId)
         return {"id": grant.id, "status": grant.status}
 
-    @router.get("/approvals", dependencies=admin_dep)
+    @router.get("/approvals", dependencies=auditor_dep)
     async def list_approvals(
         tenantId: Annotated[str, Query()],
         status: Annotated[str | None, Query()] = None,
@@ -331,8 +441,10 @@ def control_router(ctx: AppContext) -> APIRouter:
         approvals = ctx.store.list_approvals(tenantId, status)
         return [a.model_dump(mode="json", exclude_none=True) for a in approvals]
 
-    @router.post("/approvals/{approval_id}/decide", dependencies=admin_dep)
-    async def decide_approval(approval_id: str, body: DecideApproval) -> dict[str, Any]:
+    @router.post("/approvals/{approval_id}/decide", dependencies=approver_dep)
+    async def decide_approval(
+        approval_id: str, body: DecideApproval, request: Request
+    ) -> dict[str, Any]:
         approval = ctx.store.get_approval(approval_id)
         if not approval:
             raise _not_found("approval", approval_id)
@@ -346,11 +458,18 @@ def control_router(ctx: AppContext) -> APIRouter:
             raise ToolgateError(ErrorCodes.VALIDATION, "approval expired")
         approval.status = "approved" if body.decision == "approve" else "denied"
         approval.decidedAt = _now()
-        approval.decidedBy = body.decidedBy
+        approval.decidedBy = body.decidedBy or request.state.principal.id
         ctx.store.put_approval(approval)
+        _ops_audit(
+            request,
+            f"approvals.{body.decision}",
+            {"id": approval.id, "tool": f"{approval.upstream}.{approval.tool}",
+             "argsHash": hash_args(approval.args)},
+            approval.tenantId,
+        )
         return approval.model_dump(mode="json", exclude_none=True)
 
-    @router.get("/audit", dependencies=admin_dep)
+    @router.get("/audit", dependencies=auditor_dep)
     async def list_audit(
         tenantId: Annotated[str | None, Query()] = None,
     ) -> list[dict[str, Any]]:
@@ -358,26 +477,29 @@ def control_router(ctx: AppContext) -> APIRouter:
             r.model_dump(mode="json", exclude_none=True) for r in ctx.store.list_audit(tenantId)
         ]
 
-    @router.post("/keys/rotate", dependencies=admin_dep)
-    async def rotate_keys(body: RotateKeys) -> dict[str, Any]:
+    @router.post("/keys/rotate", dependencies=owner_dep)
+    async def rotate_keys(body: RotateKeys, request: Request) -> dict[str, Any]:
+        principal: Principal = request.state.principal
         if body.plane == "control":
             new = ctx.rotate_control_key()
+            _ops_audit(request, "keys.rotate.control", {"kid": new.kid})
         else:
-            new = ctx.rotate_gate_key(rotated_by="admin")
+            # Gate rotation writes its own signed handoff record.
+            new = ctx.rotate_gate_key(rotated_by=principal.id)
         return {"plane": body.plane, "kid": new.kid}
 
-    @router.post("/audit/checkpoint", dependencies=admin_dep)
+    @router.post("/audit/checkpoint", dependencies=owner_dep)
     async def cut_checkpoint() -> dict[str, Any]:
         cp = ctx.audit.checkpoint()
         return cp.model_dump(mode="json", exclude_none=True)
 
-    @router.get("/audit/checkpoints", dependencies=admin_dep)
+    @router.get("/audit/checkpoints", dependencies=auditor_dep)
     async def list_checkpoints() -> list[dict[str, Any]]:
         return [
             c.model_dump(mode="json", exclude_none=True) for c in ctx.store.list_checkpoints()
         ]
 
-    @router.get("/audit/bundle", dependencies=admin_dep)
+    @router.get("/audit/bundle", dependencies=auditor_dep)
     async def audit_bundle(
         tenantId: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
@@ -395,7 +517,7 @@ def control_router(ctx: AppContext) -> APIRouter:
             ],
         }
 
-    @router.get("/audit/verify", dependencies=admin_dep)
+    @router.get("/audit/verify", dependencies=auditor_dep)
     async def verify_audit() -> dict[str, Any]:
         v = ctx.audit.verify()
         cp_valid, cp_total = ctx.audit.verify_checkpoints()
@@ -409,6 +531,66 @@ def control_router(ctx: AppContext) -> APIRouter:
             out["broken_at_seq"] = v.broken_at_seq
             out["reason"] = v.reason
         return out
+
+    @router.post("/operators", status_code=201, dependencies=owner_dep)
+    async def create_operator(body: CreateOperator, request: Request) -> dict[str, Any]:
+        key = f"opk_{_secrets.token_urlsafe(24)}"
+        operator = Operator(
+            id=new_id("evt").replace("evt_", "op_"),
+            name=body.name,
+            role=body.role,
+            keyHash=hashlib.sha256(key.encode()).hexdigest(),
+            status="active",
+            createdAt=_now(),
+        )
+        ctx.store.put_operator(operator)
+        _ops_audit(request, "operators.create", {"id": operator.id, "role": operator.role})
+        # The plaintext key is shown exactly once; only its hash is stored.
+        return {
+            "operator": operator.model_dump(mode="json", exclude={"keyHash"}),
+            "key": key,
+        }
+
+    @router.get("/operators", dependencies=auditor_dep)
+    async def list_operators() -> list[dict[str, Any]]:
+        return [
+            o.model_dump(mode="json", exclude={"keyHash"}) for o in ctx.store.list_operators()
+        ]
+
+    @router.post("/operators/{operator_id}/disable", dependencies=owner_dep)
+    async def disable_operator(operator_id: str, request: Request) -> dict[str, str]:
+        operator = ctx.store.get_operator(operator_id)
+        if not operator:
+            raise _not_found("operator", operator_id)
+        operator.status = "disabled"
+        ctx.store.put_operator(operator)
+        _ops_audit(request, "operators.disable", {"id": operator.id})
+        return {"id": operator.id, "status": operator.status}
+
+    @router.post("/policies/{policy_id}/simulate", dependencies=auditor_dep)
+    async def simulate_policy(policy_id: str, body: SimulateCall) -> dict[str, Any]:
+        """Dry-run a call against a policy — no execution, no audit, no budget.
+        The console's rule editor uses this to answer "would this pass?"."""
+        policy = ctx.store.get_policy(policy_id)
+        if not policy:
+            raise _not_found("policy", policy_id)
+        call = ToolCallContext(
+            upstream=body.upstream,
+            tool=body.tool,
+            args=body.args,
+            cost_units=body.costUnits,
+            tainted=body.tainted,
+        )
+        if body.authorization is not None:
+            decision = decide(policy, call, body.authorization)
+        else:
+            decision = evaluate_policy(policy, call)
+        return {
+            "effect": decision.effect,
+            "source": decision.source,
+            "ruleId": decision.rule_id,
+            "reason": decision.reason,
+        }
 
     return router
 

@@ -16,9 +16,16 @@ class AdminClient:
 
     def __init__(self, profile: Profile) -> None:
         self.url = profile.url
+        # Operator keys (opk_...) are the daily driver; the static admin key is
+        # the audited break-glass path. Both authenticate the control plane.
+        header = (
+            "x-toolgate-operator-key"
+            if profile.admin_key.startswith("opk_")
+            else "x-toolgate-admin-key"
+        )
         self._http = httpx.Client(
             base_url=profile.url,
-            headers={"x-toolgate-admin-key": profile.admin_key},
+            headers={header: profile.admin_key},
             timeout=15.0,
         )
 

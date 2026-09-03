@@ -15,6 +15,7 @@ from toolgate.core import (
     Budget,
     Checkpoint,
     DelegationGrant,
+    Operator,
     Policy,
     Tenant,
     Upstream,
@@ -337,6 +338,28 @@ class Store:
         else:
             rows = self.db.execute("SELECT json FROM audit ORDER BY seq").fetchall()
         return [AuditRecord.model_validate(json.loads(r[0])) for r in rows]
+
+    # -- operators -------------------------------------------------------------------
+
+    def put_operator(self, op: Operator) -> None:
+        self._put("operator", op.id, None, op.model_dump(mode="json", exclude_none=True))
+
+    def get_operator(self, operator_id: str) -> Operator | None:
+        return self._get_model("operator", operator_id, Operator)
+
+    def list_operators(self) -> list[Operator]:
+        rows = self.db.execute(
+            "SELECT json FROM entities WHERE kind = 'operator' ORDER BY id"
+        ).fetchall()
+        return [Operator.model_validate(json.loads(r[0])) for r in rows]
+
+    def find_operator_by_key_hash(self, key_hash: str) -> Operator | None:
+        row = self.db.execute(
+            "SELECT id FROM entities WHERE kind = 'operator' "
+            "AND json_extract(json, '$.keyHash') = ?",
+            (key_hash,),
+        ).fetchone()
+        return self.get_operator(row[0]) if row else None
 
     # -- checkpoints ---------------------------------------------------------------
 
