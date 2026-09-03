@@ -1,6 +1,8 @@
 [project]
-name = "toolgate"
-version = "0.2.0"
+# Distribution name: "toolgate" on PyPI is squatted (stale since 2024, PEP 541
+# reclaim pending) — the import name remains `toolgate`.
+name = "toolgate-io"
+version = "0.3.0"
 description = "Capability control plane for embedded AI agents: scoped tokens, policy enforcement, credential injection, signed audit."
 readme = "README.md"
 license = "Apache-2.0"
@@ -23,6 +25,8 @@ dependencies = [
     "jwcrypto>=1.5.6",
     "cryptography>=43",
     "httpx>=0.27",
+    "typer>=0.27.2",
+    "rich>=15.0.0",
 ]
 
 [dependency-groups]
@@ -38,6 +42,7 @@ Repository = "https://github.com/maglionejm/toolgate"
 Issues = "https://github.com/maglionejm/toolgate/issues"
 
 [project.scripts]
+toolgate = "toolgate.cli.main:main"
 toolgate-server = "toolgate.server.main:main"
 toolgate-demo = "toolgate.demo:main"
 

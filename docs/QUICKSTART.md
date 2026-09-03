@@ -4,6 +4,26 @@
 
 This guide takes you from zero to a policy-gated, human-approvable, fully audited agent tool call in about ten minutes. Everything runs locally.
 
+> **Prefer the CLI.** Every curl below has a one-line `toolgate` equivalent — see the [CLI reference](reference/CLI.md). The short version:
+>
+> ```bash
+> pip install toolgate-io
+> toolgate server &            # prints the admin key
+> toolgate init                # save profile
+> toolgate keys generate --out agent-key.json
+> toolgate tenants create "Acme"
+> toolgate users create -t tnt_... --name "Sam"
+> toolgate agents register -t tnt_... --name assistant --key agent-key.json
+> toolgate upstreams add -t tnt_... --name crm --base-url https://api.your-crm.example \
+>     --mode bearer --tool read_contact --tool "update_contact:2:se"
+> toolgate policies create -t tnt_... --name default --rules-file rules.json
+> toolgate grants create -t tnt_... --user usr_... --agent agt_... --policy pol_... \
+>     --budget 100 --authz "crm:*"
+> toolgate dev call crm read_contact --grant grt_... --key agent-key.json --args '{"contactId":"c-001"}'
+> ```
+>
+> The raw API path below remains fully supported.
+
 ## 1. Install and boot
 
 ```bash
