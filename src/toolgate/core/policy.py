@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Literal
 
+import regex
+
 from .types import (
     ArgConstraint,
     AuthorizationDetail,
@@ -12,6 +14,18 @@ from .types import (
     Policy,
     PolicyRule,
 )
+
+# `matches` runs an admin-authored regex against fully attacker-controlled
+# argument values. A catastrophic pattern (e.g. "(a+)+$") plus a crafted string
+# can burn CPU for seconds on the shared event loop. We evaluate these with the
+# `regex` module, which enforces a wall-clock deadline mid-match, and refuse
+# absurdly long inputs before we even start.
+_MATCH_TIMEOUT_SECONDS = 0.1
+_MATCH_MAX_INPUT = 4096
+
+
+class PolicyTimeout(Exception):
+    """A policy regex exceeded its evaluation budget; the caller fails closed."""
 
 
 @dataclass(frozen=True)
@@ -53,31 +67,47 @@ def is_within_authorization(
     call: ToolCallContext, details: list[AuthorizationDetail]
 ) -> bool:
     return any(
-        d.upstream == call.upstream and ("*" in d.tools or call.tool in d.tools)
+        d.upstream == call.upstream and (d.tools == ["*"] or call.tool in d.tools)
         for d in details
     )
 
 
 def evaluate_policy(policy: Policy, call: ToolCallContext) -> Decision:
-    for index, rule in enumerate(policy.rules):
-        if not _rule_matches(rule, call):
-            continue
-        rule_id = rule.id or f"{policy.id}#{index}"
+    try:
+        for index, rule in enumerate(policy.rules):
+            if not _rule_matches(rule, call):
+                continue
+            rule_id = rule.id or f"{policy.id}#{index}"
 
-        max_cost = rule.constraints.maxCostUnits if rule.constraints else None
-        if rule.effect == "allow" and max_cost is not None and call.cost_units > max_cost:
+            # A cost ceiling is a hard cap: it must deny an over-budget call
+            # whether the rule would otherwise allow it OR park it for approval,
+            # otherwise a `require_approval` rule silently turns the cap into an
+            # approval prompt for calls the author meant to forbid outright.
+            max_cost = rule.constraints.maxCostUnits if rule.constraints else None
+            if (
+                max_cost is not None
+                and rule.effect in ("allow", "require_approval")
+                and call.cost_units > max_cost
+            ):
+                return Decision(
+                    effect="deny",
+                    source="constraint",
+                    rule_id=rule_id,
+                    reason=f"call cost {call.cost_units} exceeds rule maxCostUnits {max_cost}",
+                )
+
             return Decision(
-                effect="deny",
-                source="constraint",
+                effect=rule.effect,
+                source="rule",
                 rule_id=rule_id,
-                reason=f"call cost {call.cost_units} exceeds rule maxCostUnits {max_cost}",
+                reason=rule.description or f"matched {rule.effect} rule {rule_id}",
             )
-
+    except PolicyTimeout as err:
+        # Fail closed: a runaway regex denies the call rather than hanging it.
         return Decision(
-            effect=rule.effect,
-            source="rule",
-            rule_id=rule_id,
-            reason=rule.description or f"matched {rule.effect} rule {rule_id}",
+            effect="deny",
+            source="constraint",
+            reason=f"policy evaluation aborted: {err}",
         )
     return Decision(effect="deny", source="default", reason="no policy rule matched (default deny)")
 
@@ -98,8 +128,9 @@ def _compiled_glob(pattern: str) -> re.Pattern[str]:
 
 
 @lru_cache(maxsize=512)
-def _compiled_search(pattern: str) -> re.Pattern[str]:
-    return re.compile(pattern)
+def _compiled_search(pattern: str) -> regex.Pattern[str]:
+    # `regex` (not stdlib `re`) so the match call can carry a wall-clock timeout.
+    return regex.compile(pattern)
 
 
 def glob_match(pattern: str, value: str) -> bool:
@@ -142,11 +173,17 @@ def constraint_holds(constraint: ArgConstraint, args: dict[str, Any]) -> bool:
             isinstance(actual, str) and isinstance(expected, str) and actual.startswith(expected)
         )
     if op == "matches":
-        return (
-            isinstance(actual, str)
-            and isinstance(expected, str)
-            and _compiled_search(expected).search(actual) is not None
-        )
+        if not (isinstance(actual, str) and isinstance(expected, str)):
+            return False
+        if len(actual) > _MATCH_MAX_INPUT:
+            raise PolicyTimeout(f"argument too long to match ({len(actual)} chars)")
+        try:
+            return (
+                _compiled_search(expected).search(actual, timeout=_MATCH_TIMEOUT_SECONDS)
+                is not None
+            )
+        except TimeoutError as err:
+            raise PolicyTimeout("regex evaluation timed out") from err
     return False
 
 

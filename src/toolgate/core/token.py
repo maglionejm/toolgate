@@ -53,11 +53,15 @@ def mint_capability_token(
 ) -> MintedToken:
     key = to_jwk(control_plane_private_jwk)
     ttl = ttl_seconds if ttl_seconds is not None else DEFAULT_TOKEN_TTL_SECONDS
+    if ttl <= 0:
+        # A non-positive TTL used to mint an already-expired token; refuse it so
+        # a caller can never accidentally hand out a dead-on-arrival capability.
+        raise ValueError("ttl_seconds must be positive")
     jti = secrets.token_urlsafe(16)
     txn = txn or f"txn_{secrets.token_urlsafe(12)}"
 
     now = time.time()
-    exp = now + (ttl if ttl < 0 else _jittered_ttl_seconds(ttl))
+    exp = now + _jittered_ttl_seconds(ttl)
 
     header: dict[str, Any] = {"alg": "EdDSA", "typ": CAPABILITY_TOKEN_TYP}
     kid = _kid_of(control_plane_private_jwk)

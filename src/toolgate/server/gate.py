@@ -35,7 +35,7 @@ from .context import AppContext
 
 class CallBody(BaseModel):
     tool: str = Field(min_length=1)
-    args: dict[str, Any] = {}
+    args: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,10 @@ def gate_router(ctx: AppContext) -> APIRouter:
     async def call_tool(upstream_name: str, body: CallBody, request: Request) -> Any:
         authed = await _authenticate(ctx, request, f"/v1/gate/call/{upstream_name}")
         claims, grant = authed.claims, authed.grant
+        if not ctx.gate_limiter.allow(grant.id):
+            raise ToolgateError(
+                ErrorCodes.RATE_LIMITED, "gate call rate limit exceeded for this grant"
+            )
         upstream, tool_def = _resolve_tool(ctx, claims.tenant, upstream_name, body.tool)
 
         call_id = new_id("call")
@@ -108,6 +112,7 @@ def gate_router(ctx: AppContext) -> APIRouter:
                 ).isoformat(),
             )
             ctx.store.put_approval(approval)
+            ctx.store.prune_approvals()
             ctx.audit.record(
                 AuditRecordInput(
                     id=new_id("evt"),
@@ -144,7 +149,9 @@ def gate_router(ctx: AppContext) -> APIRouter:
 
     @router.get("/approvals/{approval_id}")
     async def approval_status(approval_id: str, request: Request) -> dict[str, Any]:
-        authed = await _authenticate_token_only(ctx, request)
+        # Require the PoP proof like every other gate endpoint: a stolen bearer
+        # token alone must not be able to enumerate approval state.
+        authed = await _authenticate(ctx, request, f"/v1/gate/approvals/{approval_id}")
         approval = _require_approval(ctx, approval_id, authed.claims)
         return {
             "approval_id": approval.id,
@@ -167,7 +174,21 @@ def gate_router(ctx: AppContext) -> APIRouter:
             ctx.store.put_approval(approval)
             raise ToolgateError(ErrorCodes.APPROVAL_DENIED, "approval expired before execution")
 
+        # Resolve (read-only) before claiming, so an unknown-upstream error can't
+        # strand the claim.
         upstream, tool_def = _resolve_tool(ctx, claims.tenant, approval.upstream, approval.tool)
+
+        # Atomically claim the approval *before* the upstream call. If two
+        # requests race, only one wins the approved->executing transition; the
+        # loser is rejected instead of firing the side effect a second time.
+        if not ctx.store.claim_approval_for_execution(approval.id):
+            current = ctx.store.get_approval(approval.id)
+            state = current.status if current else "unknown"
+            raise ToolgateError(
+                ErrorCodes.APPROVAL_DENIED,
+                f"approval is {state} (already executing or executed)",
+            )
+
         # The stored args are the approved args — the agent cannot substitute them.
         actor = AuditActor(
             agentId=claims.act.sub, userId=claims.sub, grantId=grant.id, tokenJti=claims.jti
@@ -184,17 +205,22 @@ def gate_router(ctx: AppContext) -> APIRouter:
             reason=f"approved by {approval.decidedBy or 'unknown'} at {approval.decidedAt or '?'}",
         )
 
-        result = await _execute_call(
-            ctx,
-            actor=actor,
-            action=action,
-            decision=decision,
-            grant=grant,
-            upstream=upstream,
-            tool_def=tool_def,
-            tool=approval.tool,
-            args=approval.args,
-        )
+        try:
+            result = await _execute_call(
+                ctx,
+                actor=actor,
+                action=action,
+                decision=decision,
+                grant=grant,
+                upstream=upstream,
+                tool_def=tool_def,
+                tool=approval.tool,
+                args=approval.args,
+            )
+        except Exception:
+            # Nothing succeeded upstream — release the claim so a retry is possible.
+            ctx.store.revert_approval_claim(approval.id)
+            raise
 
         approval.status = "executed"
         approval.executedAt = _now()

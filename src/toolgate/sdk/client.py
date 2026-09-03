@@ -82,7 +82,7 @@ class ToolgateClient:
                 "grant_id": self._grant_id,
             },
         )
-        body = res.json()
+        body = _json_body(res)
         if res.status_code != 200 or "access_token" not in body:
             raise _error_from(res.status_code, body)
         self._token = TokenGrant(
@@ -99,7 +99,7 @@ class ToolgateClient:
         pending approval handle; raises ToolgateCallError on denial/budget/
         revocation."""
         res = self._signed_post(f"/v1/gate/call/{upstream}", {"tool": tool, "args": args or {}})
-        body = res.json()
+        body = _json_body(res)
 
         if res.status_code == 202:
             return PendingApproval(
@@ -130,18 +130,30 @@ class ToolgateClient:
 
     def approval_status(self, approval_id: str) -> str:
         grant = self.token()
-        res = self._http.get(
-            f"{self._base_url}/v1/gate/approvals/{approval_id}",
-            headers={"authorization": f"Bearer {grant.access_token}"},
+        # The gate now requires a PoP proof on this GET (sender-binding), not just
+        # the bearer token — sign one exactly as the POST paths do.
+        htu = f"{self._base_url}/v1/gate/approvals/{approval_id}"
+        proof = sign_pop_proof(
+            self._agent_private_jwk,
+            htm="GET",
+            htu=htu,
+            access_token=grant.access_token,
         )
-        body = res.json()
+        res = self._http.get(
+            htu,
+            headers={
+                "authorization": f"Bearer {grant.access_token}",
+                "x-toolgate-proof": proof,
+            },
+        )
+        body = _json_body(res)
         if res.status_code >= 400:
             raise _error_from(res.status_code, body)
         return body["status"]
 
     def execute_approval(self, approval_id: str) -> CallResult:
         res = self._signed_post(f"/v1/gate/approvals/{approval_id}/execute", None)
-        body = res.json()
+        body = _json_body(res)
         if res.status_code >= 400:
             raise _error_from(res.status_code, body)
         return CallResult(status="executed", call_id=body["call_id"], result=body["result"])
@@ -168,3 +180,16 @@ def _error_from(http_status: int, body: dict[str, Any]) -> ToolgateCallError:
         http_status,
         err.get("details"),
     )
+
+
+def _json_body(res: httpx.Response) -> Any:
+    """Parse a JSON response body, surfacing a non-JSON body as the SDK's typed
+    error (carrying the HTTP status) rather than a raw ``json.JSONDecodeError``."""
+    try:
+        return res.json()
+    except ValueError as err:
+        raise ToolgateCallError(
+            "TG_INTERNAL",
+            f"non-JSON response from gate (HTTP {res.status_code})",
+            res.status_code,
+        ) from err

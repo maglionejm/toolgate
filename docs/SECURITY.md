@@ -1,6 +1,6 @@
 # Security Model
 
-> Toolgate 0.2 · Last updated 2026-09-03
+> Toolgate 0.3 · Last updated 2026-09-03
 
 ## Design commitment
 
@@ -37,6 +37,8 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 | T11 | Token minted for agent A used by agent B | `cnf.jkt` is A's key thumbprint; B cannot produce proofs | Gate | yes |
 | T12 | Approval fatigue as an attack surface (OWASP T10) | Policy tiers: allow routine, approve consequential; budgets cap the rest | Policy design | design-level |
 
+> The T8 "never in tokens, responses, or logs" guarantee covers **upstream credentials**. The **admin key** is a distinct secret — a control-plane bearer credential. As of this release it is no longer printed in plaintext at server boot; only a short fingerprint is logged, so an operator can confirm which key is active without the value ever appearing in logs. Set it explicitly via `TOOLGATE_ADMIN_KEY` and distribute it out-of-band.
+
 ## Key management
 
 | Key | Purpose | Storage (MVP) | Production path |
@@ -56,7 +58,7 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 
 ## Known gaps (tracked, not hidden)
 
-- **Admin plane**: single static admin key; no operator identities, no MFA, no rate limiting (issues #24, #21).
+- **Admin plane**: single static admin key (a control-plane bearer credential; logged only as a fingerprint at boot, never in plaintext); no operator identities, no MFA, no rate limiting (issues #24, #21).
 - **Tenant isolation** relies on application-level filters over a shared SQLite file; no per-tenant encryption.
 - **Vault** master key is env-based; KMS envelope encryption pending (#8).
 - **Audit** chain is internally verifiable but not yet externally anchored (#12); a compromised gate key could re-sign a rewritten chain.

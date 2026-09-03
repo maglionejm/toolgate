@@ -28,7 +28,7 @@ POLICY = Policy(
             "match": {
                 "upstream": "email",
                 "tool": "send_email",
-                "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com)"}],
+                "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com$)"}],
             },
         },
         {

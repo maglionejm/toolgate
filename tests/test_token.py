@@ -1,5 +1,6 @@
 import base64
 import json
+from unittest import mock
 
 import pytest
 
@@ -46,7 +47,11 @@ def test_mint_and_verify_delegation_semantics():
 
 def test_rejects_expired_token():
     cp = generate_ed25519_key_pair()
-    minted = mint_capability_token(cp.private_jwk, **BASE, ttl_seconds=-10)
+    # Mint at a timestamp far in the past so the token is already expired now.
+    # (A non-positive ttl is refused at mint time — it would produce a
+    # dead-on-arrival token — so we shift the clock instead.)
+    with mock.patch("toolgate.core.token.time.time", return_value=1000.0):
+        minted = mint_capability_token(cp.private_jwk, **BASE, ttl_seconds=10)
     with pytest.raises(ToolgateError) as err:
         verify_capability_token(
             cp.public_jwk, minted.token, issuer=BASE["issuer"], audience=BASE["audience"]

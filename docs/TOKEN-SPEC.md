@@ -1,6 +1,6 @@
 # Token Specification
 
-> Toolgate 0.2 · Last updated 2026-09-03 · Normative for interoperating implementations
+> Toolgate 0.3 · Last updated 2026-09-03 · Normative for interoperating implementations
 
 Toolgate uses three signed artifacts, all EdDSA (Ed25519) JWS with distinct `typ` headers so they can never be confused for one another.
 
@@ -26,7 +26,7 @@ Minted by the control plane from a delegation grant; consumed by the gate. Stand
 | `aud` | string | `toolgate:gate` — audience-bound, rejected anywhere else |
 | `tenant` | string | Tenant id |
 | `grant_id` | string | The durable delegation this token was minted from |
-| `scope` | string | Space-delimited coarse scopes (informational) |
+| `scope` | string | Space-delimited coarse scopes. Advisory OAuth-style metadata only — **not** independently enforced by the gate; `authorization_details` is the authoritative bound on what the token can call. |
 | `authorization_details` | array | The enforced surface: `[{ "type": "toolgate:tool_call", "upstream": "crm", "tools": ["*"] }]`. Calls outside it are denied before policy runs. |
 | `cnf.jkt` | string | RFC 7638 thumbprint of the agent key that must sign call proofs |
 | `txn` | string | Per-task transaction id; join key across audit records |

@@ -29,6 +29,7 @@ from .keys import (
     jwk_thumbprint,
     public_jwk_from_private,
     to_jwk,
+    validate_public_ed25519_jwk,
 )
 from .policy import (
     BudgetCheck,
@@ -144,6 +145,7 @@ __all__ = [
     "sign_pop_proof",
     "signing_key_from_jwk",
     "to_jwk",
+    "validate_public_ed25519_jwk",
     "verify_audit_chain",
     "verify_capability_token",
     "verify_client_assertion",

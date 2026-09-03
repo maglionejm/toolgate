@@ -1,6 +1,6 @@
 # Quickstart
 
-> Toolgate 0.2 · Last updated 2026-09-03 · Audience: application engineers integrating an agent
+> Toolgate 0.3 · Last updated 2026-09-03 · Audience: application engineers integrating an agent
 
 This guide takes you from zero to a policy-gated, human-approvable, fully audited agent tool call in about ten minutes. Everything runs locally.
 
@@ -8,7 +8,8 @@ This guide takes you from zero to a policy-gated, human-approvable, fully audite
 >
 > ```bash
 > pip install toolgate-io
-> toolgate server &            # prints the admin key
+> # In production the server fails closed without these keys; set them explicitly.
+> TOOLGATE_MASTER_KEY=$(openssl rand -hex 32) TOOLGATE_ADMIN_KEY=$(openssl rand -hex 24) toolgate server &   # server logs only the key fingerprint, not the key
 > toolgate init                # save profile
 > toolgate keys generate --out agent-key.json
 > toolgate tenants create "Acme"
@@ -28,10 +29,15 @@ This guide takes you from zero to a policy-gated, human-approvable, fully audite
 
 ```bash
 uv sync
-uv run toolgate-server
+# Set the keys explicitly — the server fails closed without them and logs only a
+# fingerprint of the admin key, never the key itself. (Use TOOLGATE_DEV=1 to allow
+# ephemeral dev keys instead.)
+TOOLGATE_MASTER_KEY=$(openssl rand -hex 32) TOOLGATE_ADMIN_KEY=$(openssl rand -hex 24) uv run toolgate-server
 # [toolgate] control plane + gate listening on :8484
-# [toolgate] admin key: tgk_...        <- copy this
+# [toolgate] admin key fingerprint: <sha256 prefix>   <- confirms which key is active; the key value is not logged
 ```
+
+Use the `TOOLGATE_ADMIN_KEY` value you set above wherever the admin header is required below.
 
 Export for convenience:
 

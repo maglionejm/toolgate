@@ -1,6 +1,6 @@
 # API Reference
 
-> Toolgate 0.2 · Last updated 2026-09-03 · Base URL: your deployment (`TOOLGATE_PUBLIC_URL`)
+> Toolgate 0.3 · Last updated 2026-09-03 · Base URL: your deployment (`TOOLGATE_PUBLIC_URL`)
 
 Three API surfaces with distinct authentication:
 
@@ -98,7 +98,7 @@ Create an ordered rule set. First matching rule wins; **no match means deny**. �
       "match": { "upstream": "crm", "tool": "delete_*" } },
     { "id": "external-email", "effect": "require_approval",
       "match": { "upstream": "email", "tool": "send_email",
-                 "where": [ { "path": "to", "op": "matches", "value": "@(?!acme\\.com)" } ] } },
+                 "where": [ { "path": "to", "op": "matches", "value": "@(?!acme\\.com$)" } ] } },
     { "id": "crm-ok", "effect": "allow",
       "match": { "upstream": "crm", "tool": "*" },
       "constraints": { "maxCostUnits": 5 } }
@@ -108,6 +108,7 @@ Create an ordered rule set. First matching rule wins; **no match means deny**. �
 
 - `match.upstream` / `match.tool`: glob patterns (`*` matches any run of characters); absent = any.
 - `match.where[]`: argument constraints that must **all** hold. `path` is a dot path into call args. Ops: `eq, neq, gt, gte, lt, lte, in, contains, startsWith, matches` (regex).
+- **`matches` uses regex search (unanchored) against attacker-controlled argument values; anchor patterns with `^`/`$` to avoid substring bypasses.** The example above uses `@(?!acme\.com$)` (note the `$`): the unanchored form `@(?!acme\.com)` would treat `cfo@acme.com.evil.com` as internal and auto-allow it. With the anchored form, `sam@acme.com` is internal (no approval), while `cfo@globex.com` and `cfo@acme.com.evil.com` require approval.
 - `constraints.maxCostUnits`: calls costing more are denied even when the rule allows.
 
 ### POST /v1/control/grants
@@ -117,8 +118,8 @@ Record a delegation from a user to an agent. → `201`
 | Field | Type | Required | Notes |
 | --- | --- | --- | --- |
 | `tenantId`, `userId`, `agentId`, `policyId` | string | yes | All must exist |
-| `scopes` | string[] | no | Coarse labels copied into the token `scope` claim |
-| `authorization[]` | array | yes | `{ upstream, tools[] }` — `"*"` allowed; becomes token `authorization_details` |
+| `scopes` | string[] | no | Coarse labels copied into the token `scope` claim. Advisory only — **not enforced at the gate**; they do not restrict what the token can call |
+| `authorization[]` | array | yes | `{ upstream, tools[] }` — `"*"` allowed; becomes token `authorization_details`, **the authoritative bound the gate enforces** |
 | `budgetMaxUnits` | int > 0 | yes | Total cost units this delegation may spend |
 | `ttlHours` | number | no | Default 24 |
 
@@ -185,7 +186,7 @@ Rejections: unknown grant (404), revoked grant/agent (403 `TG_REVOKED`), expired
 
 ## Gate
 
-All side-effecting gate endpoints require **two** credentials: the capability token *and* a one-time proof-of-possession JWS in `x-toolgate-proof`, signed by the agent key bound in the token's `cnf.jkt`, over the method, exact URL, and token hash. The SDK does this automatically.
+Every `/v1/gate/*` endpoint requires **two** credentials: the capability token *and* a one-time proof-of-possession JWS in `x-toolgate-proof`, signed by the agent key bound in the token's `cnf.jkt`, over the method, exact URL, and token hash. This includes the read-only approval-status endpoint. The SDK does this automatically.
 
 ### POST /v1/gate/call/{upstream}
 
@@ -206,7 +207,7 @@ Pipeline, in order: token verify → grant/agent liveness → proof verify (sing
 
 ### GET /v1/gate/approvals/{id}
 
-Poll an approval's status. Requires the capability token of the same grant (no proof needed for reads).
+Poll an approval's status. Requires the capability token of the same grant **and** a one-time `x-toolgate-proof` PoP proof, like every other gate endpoint.
 
 ### POST /v1/gate/approvals/{id}/execute
 

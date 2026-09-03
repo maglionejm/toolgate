@@ -150,3 +150,14 @@ def test_denial_while_waiting(env: Env) -> None:
         env.client.wait_for_approval(parked.approval_id, poll_seconds=0.1)
     timer.join()
     assert err.value.code == "TG_APPROVAL_DENIED"
+
+
+def test_non_json_response_raises_typed_error() -> None:
+    from toolgate.sdk.client import _json_body
+
+    # A gateway returning an HTML 502 must surface as the SDK's typed error
+    # carrying the HTTP status, never a raw json.JSONDecodeError.
+    res = httpx.Response(502, text="<html>502 Bad Gateway</html>")
+    with pytest.raises(ToolgateCallError) as err:
+        _json_body(res)
+    assert err.value.http_status == 502

@@ -1,6 +1,6 @@
 # Operations Runbook
 
-> Toolgate 0.2 · Last updated 2026-09-03 · Audience: operators of a Toolgate deployment
+> Toolgate 0.3 · Last updated 2026-09-03 · Audience: operators of a Toolgate deployment
 
 ## R1 — Emergency: revoke an agent's access
 

@@ -27,8 +27,9 @@ UPSTREAM_PORT = 8492
 GATE_URL = f"http://localhost:{GATE_PORT}"
 UPSTREAM_URL = f"http://localhost:{UPSTREAM_PORT}"
 
-CRM_SECRET = "crm-live-key-7f3a"
-EMAIL_SECRET = "email-live-key-b91c"
+# Obvious fakes: these are demo-only mock upstream credentials, never real keys.
+CRM_SECRET = "demo-crm-mock-secret"  # noqa: S105 - not a real credential
+EMAIL_SECRET = "demo-email-mock-secret"  # noqa: S105 - not a real credential
 
 
 def line(tag: str, msg: str) -> None:
@@ -163,7 +164,7 @@ def main() -> None:
                     "match": {
                         "upstream": "email",
                         "tool": "send_email",
-                        "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com)"}],
+                        "where": [{"path": "to", "op": "matches", "value": "@(?!acme\\.com$)"}],
                     },
                 },
                 {

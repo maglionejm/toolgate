@@ -17,7 +17,7 @@ from typing import Any
 from jwcrypto import jwk, jws, jwt
 
 from .errors import ErrorCodes, ToolgateError
-from .keys import KeyLike, public_jwk_from_private, to_jwk
+from .keys import KeyLike, public_jwk_from_private, to_jwk, validate_public_ed25519_jwk
 
 CLIENT_ASSERTION_TYP = "tg-client+jwt"
 POP_PROOF_TYP = "tg-pop+jwt"
@@ -74,7 +74,16 @@ def verify_client_assertion(
         header = json.loads(verifier.header)
         if header.get("typ") != CLIENT_ASSERTION_TYP:
             raise ValueError("client assertion has wrong typ")
+        # Pin the algorithm: never let a symmetric/other-alg signature through
+        # even if a non-Ed25519 key were somehow registered.
+        if header.get("alg") != "EdDSA":
+            raise ValueError(f"client assertion alg must be EdDSA, got {header.get('alg')!r}")
         claims = json.loads(verifier.claims)
+        # RFC 7523 wants a single string audience; jwcrypto's check_claims is
+        # satisfied by an array that merely *contains* the expected value, which
+        # weakens the "audience is exactly this token URL" binding.
+        if not isinstance(claims.get("aud"), str):
+            raise ValueError("client assertion aud must be a single string")
         if not claims.get("iss") or claims["iss"] != claims.get("sub"):
             raise ValueError("client assertion must have iss == sub")
         if not isinstance(claims.get("jti"), str):
@@ -151,10 +160,14 @@ def verify_pop_proof(
         header = signature.jose_header
         if header.get("typ") != POP_PROOF_TYP or "jwk" not in header:
             raise ValueError("missing typ or embedded jwk")
+        # Pin the algorithm and the embedded key type. This is what stops an
+        # attacker embedding a symmetric (`oct`) key — whose "public" half is the
+        # HMAC secret — and self-signing a valid-looking proof.
+        if header.get("alg") != "EdDSA":
+            raise ValueError(f"proof alg must be EdDSA, got {header.get('alg')!r}")
+        validate_public_ed25519_jwk(header["jwk"])
 
         embedded = jwk.JWK(**header["jwk"])
-        if "d" in header["jwk"]:
-            raise ValueError("proof header must not embed a private key")
         jkt = embedded.thumbprint()
         if jkt != expected_jkt:
             raise ValueError("proof key does not match token cnf.jkt")

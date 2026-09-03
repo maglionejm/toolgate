@@ -68,9 +68,11 @@ toolgate keys generate --out agent-key.json          # agent identity (private k
 toolgate grants create -t tnt_... --user usr_... --agent agt_... \
     --policy pol_... --budget 100 --authz "crm:*"    # bounded delegation
 toolgate approvals watch -t tnt_... --by usr_...     # interactive human-in-the-loop inbox
-toolgate audit export --out audit.json && toolgate audit verify --file audit.json   # offline proof
+toolgate audit export --out audit.json && toolgate audit verify --file audit.json   # verify an exported chain
 toolgate dev call crm read_contact --grant grt_... --key agent-key.json             # act as the agent
 ```
+
+> **Offline-verification caveat.** `audit verify --file` is genuinely offline/third-party only when you supply the gate's public key out-of-band via `--jwk`. Without `--jwk`, the verifier fetches the key from `GET /v1/keys` on the very server being audited — so a server that forged the chain could also serve a matching key. For independent verification, pass `--jwk` with a key you obtained separately.
 
 ## Agent-side SDK
 
@@ -122,7 +124,7 @@ uv sync
 uv run ruff check src tests
 uv run pytest tests/ -q     # 39 tests: core unit + server integration + SDK-vs-server
 uv run toolgate-demo        # the six-act scenario
-uv run toolgate-server      # standalone server (prints the admin key on first boot)
+uv run toolgate-server      # standalone server (logs only the admin-key fingerprint at boot; set TOOLGATE_ADMIN_KEY explicitly)
 ```
 
 Production env vars: `TOOLGATE_MASTER_KEY`, `TOOLGATE_ADMIN_KEY`, `TOOLGATE_PUBLIC_URL`, `TOOLGATE_DB`, `PORT`.

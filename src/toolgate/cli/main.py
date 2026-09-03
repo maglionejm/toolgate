@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Annotated, Any
@@ -8,6 +9,7 @@ from typing import Annotated, Any
 import httpx
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -16,6 +18,7 @@ from toolgate.core import (
     AuditRecord,
     generate_ed25519_key_pair,
     jwk_thumbprint,
+    validate_public_ed25519_jwk,
     verify_audit_chain,
     verify_capability_token,
 )
@@ -91,6 +94,15 @@ def _table(title: str, columns: list[str], rows: list[list[str]]) -> Table:
     return t
 
 
+def _write_0600(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` created already at mode 0600 — no default-umask
+    (0644) window and nothing left world-readable if the process crashes."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        os.fchmod(fh.fileno(), 0o600)
+        fh.write(text)
+
+
 # ---------------------------------------------------------------------------
 # top-level
 # ---------------------------------------------------------------------------
@@ -151,11 +163,19 @@ def keys_generate(
     out: Annotated[Path, typer.Option(help="Private JWK destination (0600).")] = Path(
         "agent-key.json"
     ),
+    force: Annotated[
+        bool, typer.Option("--force", help="Overwrite an existing key file.")
+    ] = False,
 ) -> None:
     """Generate an agent Ed25519 keypair. The private key never leaves this machine."""
+    if out.exists() and not force:
+        err_console.print(
+            f"[bold red]exists[/] {escape(str(out))} already exists — refusing to overwrite; "
+            "pass [bold]--force[/] to replace it"
+        )
+        raise typer.Exit(1)
     pair = generate_ed25519_key_pair()
-    out.write_text(json.dumps(pair.private_jwk, indent=2) + "\n")
-    out.chmod(0o600)
+    _write_0600(out, json.dumps(pair.private_jwk, indent=2) + "\n")
     emit(
         {"kid": pair.kid, "publicJwk": pair.public_jwk, "privateKeyFile": str(out)},
         Panel(
@@ -224,13 +244,24 @@ def agents_register(
     name: Annotated[str, typer.Option("--name")],
     key: Annotated[
         Path,
-        typer.Option("--key", help="JWK file (private or public — only the public part is sent)."),
+        typer.Option("--key", help="Agent Ed25519 JWK file; only the public half is sent."),
     ],
 ) -> None:
     jwk = json.loads(key.read_text())
+    # Accept the generated private key file (the documented flow) or a bare
+    # public key, but only ever send the public half. Reject non-Ed25519 keys
+    # (e.g. symmetric `oct` or EC) up front so a bad key never reaches the server.
+    if jwk.get("kty") != "OKP" or jwk.get("crv") != "Ed25519" or "x" not in jwk:
+        err_console.print(
+            "[bold red]invalid key[/] agent key must be an Ed25519 (OKP) JWK with a public 'x'"
+        )
+        raise typer.Exit(1)
     public = {k: jwk[k] for k in ("kty", "crv", "x")}
     public["kid"] = jwk.get("kid") or jwk_thumbprint(public)
     public["alg"] = "EdDSA"
+    # Defensive: the extracted public JWK must satisfy the strict validator
+    # (never carries private material) before we send it.
+    validate_public_ed25519_jwk(public)
     data = client().post(
         "/v1/control/agents", {"tenantId": tenant, "name": name, "publicJwk": public}
     )
@@ -476,6 +507,17 @@ def approvals_deny(approval_id: str, by: Annotated[str, typer.Option("--by")]) -
     _decide(approval_id, "deny", by)
 
 
+def _watch_decision(choice: str) -> str | None:
+    """Map a watch-prompt answer to a decision. EXACT matching only: 'abort',
+    'argh', etc. must NOT be read as 'approve'. Anything unrecognised = skip."""
+    c = choice.strip().lower()
+    if c in {"approve", "a", "y"}:
+        return "approve"
+    if c in {"deny", "d", "n"}:
+        return "deny"
+    return None
+
+
 @approvals_app.command("watch")
 def approvals_watch(
     tenant: Annotated[str, typer.Option("--tenant", "-t")],
@@ -502,9 +544,10 @@ def approvals_watch(
                     )
                 )
                 choice = typer.prompt("approve / deny / skip", default="skip")
-                if choice.lower().startswith("a"):
+                decision = _watch_decision(choice)
+                if decision == "approve":
                     _decide(a["id"], "approve", by)
-                elif choice.lower().startswith("d"):
+                elif decision == "deny":
                     _decide(a["id"], "deny", by)
             time.sleep(interval)
     except KeyboardInterrupt:
@@ -665,7 +708,7 @@ def dev_execute(
             f"[green]executed[/] approved call -> {json.dumps(done.result)}",
         )
     except ToolgateCallError as err:
-        err_console.print(f"[bold red]{err.code}[/] {err.message}")
+        err_console.print(f"[bold red]{escape(err.code)}[/] {escape(err.message)}")
         raise typer.Exit(1) from err
 
 
@@ -705,7 +748,7 @@ def dev_call(
                 f"[green]executed[/] -> {json.dumps(result.result)}",
             )
     except ToolgateCallError as err:
-        err_console.print(f"[bold red]{err.code}[/] {err.message}")
+        err_console.print(f"[bold red]{escape(err.code)}[/] {escape(err.message)}")
         raise typer.Exit(1) from err
 
 

@@ -5,14 +5,35 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: this workflow runs on pull_request (forks included) and only
+# needs to read the repo. Overrides the broad default GITHUB_TOKEN scope.
+permissions:
+  contents: read
+
 jobs:
   checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           python-version: "3.13"
       - run: uv sync --dev
       - run: uv run ruff check src tests
       - run: uv run pytest tests/ -q
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.13"
+      # Dependency vulnerability audit. Intentionally fails the build on a known
+      # CVE in the resolved dependency tree.
+      - run: uvx pip-audit
+      # Secrets scan across the repo / PR diff. gitleaks-action reads GITHUB_TOKEN
+      # from secrets, so it must be passed through explicitly.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
