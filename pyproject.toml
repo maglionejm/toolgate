@@ -3,6 +3,18 @@ name = "toolgate"
 version = "0.2.0"
 description = "Capability control plane for embedded AI agents: scoped tokens, policy enforcement, credential injection, signed audit."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Juan Martin Maglione" }]
+keywords = ["ai-agents", "security", "oauth", "capability-tokens", "delegation", "audit"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Framework :: FastAPI",
+]
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -18,6 +30,12 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+
+[project.urls]
+Homepage = "https://maglionejm.github.io/toolgate/"
+Documentation = "https://github.com/maglionejm/toolgate/blob/main/docs/README.md"
+Repository = "https://github.com/maglionejm/toolgate"
+Issues = "https://github.com/maglionejm/toolgate/issues"
 
 [project.scripts]
 toolgate-server = "toolgate.server.main:main"
