@@ -54,7 +54,13 @@ def create_app(ctx: AppContext) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:
-        return {"ok": True, "issuer": ctx.config.issuer, "control_kid": ctx.control_keys.kid}
+        return {
+            "ok": True,
+            "issuer": ctx.config.issuer,
+            "control_kid": ctx.control_keys.kid,
+            # Aggregate failure telemetry for operator alerting (counts only).
+            "auth_failures": dict(ctx.auth_failure_counts),
+        }
 
     @app.get("/v1/keys")
     async def public_keys() -> dict[str, object]:
