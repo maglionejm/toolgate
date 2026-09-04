@@ -39,6 +39,13 @@ uv run toolgate demo
 
 The demo boots Toolgate plus two credential-guarded mock APIs and runs a six-act scenario: an allowed CRM read (the upstream rejects anything without its live key — proving injection), a policy denial, an external email parked for human approval and executed against the approved args only, budget exhaustion, revocation that kills a live token instantly, and audit chain verification with the full decision trace.
 
+With an Anthropic API key you can watch a **real model** drive the same gate — including a seventh act where a hostile web page instructs the agent to exfiltrate data through an allowed email tool, and the taint policy parks the attempt no matter what the model decides:
+
+```bash
+pip install 'toolgate-io[demo]'
+ANTHROPIC_API_KEY=... toolgate demo --live
+```
+
 ```
 [OK      ] read_contact executed -> {'contact': {...}}
 [DENIED  ] TG_DENIED: matched deny rule never-delete
@@ -103,9 +110,9 @@ if isinstance(result, PendingApproval):
 | `toolgate.core` | Capability tokens, client assertions + PoP proofs, policy engine, audit chain |
 | `toolgate.server` | Control plane (registry, grants, token endpoint, approvals, revocation, audit) + gate (enforcement pipeline, vault) |
 | `toolgate.sdk` | Agent-side client: token exchange, signed calls, approval flow, typed errors |
-| `toolgate.integrations` | Framework adapters: `openai_tools`, `langchain_tools` (`pip install 'toolgate-io[langchain]'`) |
+| `toolgate.integrations` | Framework adapters: `anthropic_tools`, `openai_tools`, `langchain_tools` (`pip install 'toolgate-io[langchain]'`) |
 | `toolgate.console` | Operator console (approvals inbox, audit explorer, grants, simulator, reports) served at `/console` |
-| `toolgate.demo` | End-to-end scenario (`uv run toolgate-demo`) |
+| `toolgate.demo` | End-to-end scenario (`uv run toolgate-demo`); `toolgate demo --live` drives it with a real Claude model (`pip install 'toolgate-io[demo]'`) |
 
 ## MCP & framework adapters
 
@@ -121,7 +128,8 @@ tools/call -> runs the full policy/budget/audit pipeline; approvals surface as
 Or stay in your framework:
 
 ```python
-from toolgate.integrations import openai_tools
+from toolgate.integrations import anthropic_tools, openai_tools
+tools, dispatch = anthropic_tools(client)   # Anthropic Messages API tools + gate-routed dispatch
 tools, dispatch = openai_tools(client)      # OpenAI tools format + gate-routed dispatch
 # pip install 'toolgate-io[langchain]' -> langchain_tools(client)
 ```

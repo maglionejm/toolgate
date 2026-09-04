@@ -27,6 +27,8 @@ This guide takes you from zero to a policy-gated, human-approvable, fully audite
 
 > **0.4:** create per-person operators (`toolgate operators create`) instead of sharing the admin key, open the console at `http://localhost:8484/console`, and try the MCP surface — any MCP client can consume your gated tools at `POST /v1/mcp` with a capability token.
 
+> **Live demo.** `toolgate demo` runs the scripted six-act scenario offline. With `pip install 'toolgate-io[demo]'` and `ANTHROPIC_API_KEY` set, `toolgate demo --live` lets a real Claude model choose every tool call — and adds a prompt-injection act where a hostile page orders exfiltration through an allowed email tool and the taint policy parks it, whatever the model decides.
+
 ## 1. Install and boot
 
 ```bash

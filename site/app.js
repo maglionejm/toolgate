@@ -28,9 +28,9 @@ const $ = (id) => document.getElementById(id);
 /* ---------- hero terminal ---------- */
 
 const TERM_LINES = [
-  ["t-dim", "$ uv run toolgate-demo"],
+  ["t-dim", "$ toolgate demo --live"],
   ["t-hl", ""],
-  ["t-hl", "TOOLGATE — an embedded agent that never holds a credential"],
+  ["t-hl", "TOOLGATE LIVE DEMO — a real model behind the gate"],
   ["t-dim", ""],
   ["t-ok", "  [OK      ] read_contact executed — credential injected server-side"],
   ["t-deny", "  [DENIED  ] TG_DENIED: matched deny rule never-delete"],
@@ -39,7 +39,9 @@ const TERM_LINES = [
   ["t-ok", "  [OK      ] send_email executed after approval"],
   ["t-deny", "  [BUDGET  ] blocked: delegation grant budget exhausted"],
   ["t-deny", "  [REVOKED ] live token died with the grant, no TTL wait"],
-  ["t-ok", "  [AUDIT   ] chain of 10 records — verification: VALID"],
+  ["t-dim", "  [CALL    ] browse — hostile page orders exfiltration by email"],
+  ["t-park", "  [PARKED  ] tainted task: exfil to evil.example needs a human"],
+  ["t-ok", "  [AUDIT   ] chain of 14 records — verification: VALID"],
 ];
 
 async function playTerminal() {

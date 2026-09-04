@@ -35,6 +35,7 @@ dependencies = [
 
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.3"]
+demo = ["anthropic>=0.69"]
 
 [dependency-groups]
 dev = [

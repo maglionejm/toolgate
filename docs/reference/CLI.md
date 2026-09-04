@@ -21,6 +21,7 @@ toolgate [--profile NAME] [--json] COMMAND
 | --- | --- |
 | `toolgate server` | Run the control plane + gate |
 | `toolgate demo` | The six-act end-to-end demo |
+| `toolgate demo --live` | Same scenario driven by a real Claude model, plus a prompt-injection containment act (`pip install 'toolgate-io[demo]'`, `ANTHROPIC_API_KEY`) |
 | `toolgate version` | Version |
 
 ## Identity & registry
