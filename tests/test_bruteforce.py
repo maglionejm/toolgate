@@ -121,7 +121,8 @@ def test_spoofed_xff_from_untrusted_peer_ignored() -> None:
     for i in range(6):
         res = env.exchange(env.bad_assertion(), headers={"x-forwarded-for": f"10.0.0.{i}"})
         assert res.status_code in (401, 429)
-    assert env.exchange(env.bad_assertion(), headers={"x-forwarded-for": "10.9.9.9"}).status_code == 429
+    final = env.exchange(env.bad_assertion(), headers={"x-forwarded-for": "10.9.9.9"})
+    assert final.status_code == 429
 
 
 def test_trusted_proxy_xff_honored() -> None:
