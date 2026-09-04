@@ -115,9 +115,27 @@ gcloud run deploy toolgate \
 Constraints to respect:
 
 - **Deploy with authentication required.** The example passes `--no-allow-unauthenticated` so the service is not reachable by anonymous callers. The control plane (`/v1/control/*`, the admin plane) must never be exposed publicly without authentication — front it with IAM invoker permissions, an authenticating proxy, or an internal-only ingress rather than a public unauthenticated URL.
-- **`max-instances 1` while on SQLite.** The store is single-writer; horizontal scaling requires the Postgres store (issue #16). Budget atomicity and jti single-use guarantees hold only within one instance.
-- Mount a volume (Cloud Run volume mounts / GCS FUSE) for `TOOLGATE_DB`, or accept that instance recycling resets state.
+- **`max-instances 1` while on SQLite.** The file store is single-writer; budget atomicity and jti single-use hold only within one instance. **To scale horizontally, point `TOOLGATE_DB` at a `postgres://` DSN** (Cloud SQL, RDS, …; `pip install 'toolgate-io[postgres]'`) — budgets, one-time proofs, approval claims, and rate limits become database-enforced and `--max-instances` can be raised freely.
+- Mount a volume (Cloud Run volume mounts / GCS FUSE) for a SQLite `TOOLGATE_DB`, or accept that instance recycling resets state. Postgres deployments need no volume.
 - Keep secrets in Secret Manager, never in env-var literals in CI.
+
+## Postgres scale-out
+
+```bash
+pip install 'toolgate-io[postgres]'
+TOOLGATE_DB=postgresql://toolgate:...@db.internal:5432/toolgate toolgate server
+```
+
+Selecting a `postgres://` DSN activates the multi-instance store: identical wire behavior, with the four exactly-once properties (budget charge, proof/assertion jti, approval executing-claim, rate window) enforced by the database instead of process memory. All instances must share one database and will share keys, admin credentials, and the audit chain (concurrent appends serialize on the seq slot).
+
+Migrating an existing single-node deployment:
+
+```bash
+toolgate migrate --from /data/toolgate.db --to postgresql://toolgate:...@db/toolgate
+# copies every table verbatim and re-verifies the audit chain on the target
+```
+
+Local compose: `docker compose --profile postgres up --scale toolgate=2` (see `compose.yaml`).
 
 ## Production checklist
 
@@ -127,4 +145,4 @@ Constraints to respect:
 - [ ] Admin key distribution restricted; rotate by setting a new `TOOLGATE_ADMIN_KEY`
 - [ ] Audit export scheduled (`GET /v1/control/audit` → object storage) and retained ≥ 6 months (EU AI Act Art 26(6) readiness)
 - [ ] `GET /v1/control/audit/verify` wired into monitoring — a `valid: false` is a page-immediately event
-- [ ] Backup strategy for the SQLite file (litestream or scheduled snapshot)
+- [ ] Backup strategy for the store (SQLite: litestream or scheduled snapshot; Postgres: managed backups/PITR)

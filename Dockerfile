@@ -10,11 +10,13 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS build
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
 COPY pyproject.toml uv.lock ./
+# The postgres extra ships in the image so a DSN in TOOLGATE_DB just works
+# (multi-instance scale-out, #16).
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --frozen --no-install-project --no-dev --extra postgres
 COPY src ./src
 COPY README.md LICENSE NOTICE ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --extra postgres
 
 FROM python:3.13-slim-bookworm
 RUN groupadd -r toolgate && useradd -r -g toolgate toolgate \

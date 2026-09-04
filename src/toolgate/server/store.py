@@ -483,12 +483,19 @@ class Store:
 
     # -- audit -------------------------------------------------------------------------
 
-    def append_audit(self, record: AuditRecord) -> None:
+    def append_audit(self, record: AuditRecord) -> bool:
+        """True when this record won its seq slot. False means another writer
+        appended that seq first — the caller rebases on last_audit() and
+        re-signs (multi-instance chain serialization, #16)."""
         doc = json.dumps(record.model_dump(mode="json", exclude_none=True))
-        self.db.execute(
-            "INSERT INTO audit (seq, tenant_id, json) VALUES (?, ?, ?)",
-            (record.seq, record.tenantId, doc),
-        )
+        try:
+            self.db.execute(
+                "INSERT INTO audit (seq, tenant_id, json) VALUES (?, ?, ?)",
+                (record.seq, record.tenantId, doc),
+            )
+            return True
+        except sqlite3.IntegrityError:
+            return False
 
     def last_audit(self) -> AuditRecord | None:
         row = self.db.execute("SELECT json FROM audit ORDER BY seq DESC LIMIT 1").fetchone()

@@ -33,6 +33,34 @@ jobs:
       # Adversarial suite: a successful attack fails the build.
       - run: uv run pytest tests/redteam -q
 
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tg
+          POSTGRES_PASSWORD: tg
+          POSTGRES_DB: toolgate
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tg"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          python-version: "3.13"
+      - run: uv sync --dev --extra postgres
+      # Multi-instance correctness: races, replay, revocation coherence, and
+      # the full flow against a real Postgres (#16).
+      - run: uv run pytest tests/test_postgres.py -q
+        env:
+          TOOLGATE_TEST_PG_DSN: postgresql://tg:tg@localhost:5432/toolgate
+
   security:
     runs-on: ubuntu-latest
     steps:
