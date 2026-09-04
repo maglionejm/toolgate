@@ -34,6 +34,7 @@
     <button data-view="grants">Grants</button>
     <button data-view="simulator">Simulator</button>
     <button data-view="reports">Reports</button>
+    <button data-view="channels">Channels</button>
   </div>
 
   <div class="tenant-row">
@@ -70,6 +71,27 @@
     <div class="tiles" id="report-tiles"></div>
     <table class="tbl mono" id="report-table">
       <thead><tr><th>tool</th><th>calls</th><th>executed</th><th>denied</th><th>cost</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="view" id="view-channels" hidden>
+    <p class="panel-label">approval notification channels · parked approvals push here</p>
+    <div class="sim-form">
+      <input id="chn-name" class="mono" placeholder="channel name">
+      <input id="chn-url" class="mono" placeholder="webhook url (https://…)">
+      <button class="btn btn-primary" id="chn-add">Add webhook channel</button>
+    </div>
+    <p class="hint">Slack and email channels carry secrets — configure them via
+      <span class="mono">toolgate channels add-slack / add-email</span> so credentials are
+      sealed straight into the vault.</p>
+    <table class="tbl mono" id="channels-table">
+      <thead><tr><th>id</th><th>type</th><th>name</th><th>status</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <p class="panel-label">slack bindings · slack user -> operator attribution</p>
+    <table class="tbl mono" id="bindings-table">
+      <thead><tr><th>slack user</th><th>operator</th><th>created</th></tr></thead>
       <tbody></tbody>
     </table>
   </section>

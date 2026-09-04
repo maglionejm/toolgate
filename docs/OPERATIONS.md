@@ -23,6 +23,19 @@ Symptoms: compromised agent host, leaked agent key, or misbehaving automation.
 curl -s "$TG/v1/control/approvals?tenantId=tnt_...&status=pending" -H "$TG_ADMIN"
 ```
 
+Don't watch the queue — push it to where approvers already are:
+
+```bash
+toolgate channels add-webhook -t tnt_... --name hooks --url https://ops.example/toolgate
+toolgate channels add-slack   -t tnt_... --name slack --channel C0123      # prompts for secrets
+toolgate channels add-email   -t tnt_... --name mail --smtp-host smtp.example \
+    --from-address toolgate@acme.example --recipient ana@acme.example:op_...
+toolgate slack bind -t tnt_... --slack-user U0123 --operator op_...        # attribution
+toolgate channels deliveries apr_...                                       # delivery status
+```
+
+Slack decisions require a user↔operator binding; email links are single-use and die with the approval. Delivery failures retry with backoff and never affect the approval itself.
+
 Decision discipline:
 
 - Read `args` — the decision applies to **exactly** those values; the agent cannot change them afterwards.

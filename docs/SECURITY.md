@@ -60,6 +60,14 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 - The red-team suite (issue #9) targets it first.
 - External cryptographic review is a pre-GA requirement.
 
+## Approval push channels (#13)
+
+Decisions can arrive from outside the console; each channel authenticates differently and all of them land in the same signed audit chain with operator attribution.
+
+- **Webhook (outbound)** — payloads are signed with the current gate key as a detached JWS over the exact body bytes (`x-toolgate-signature`, kid in `x-toolgate-kid`). Receivers MUST verify against `GET /v1/keys` `gate_jwks` and dedupe on `x-toolgate-delivery`; an unverified webhook body is attacker-controllable input. Webhooks carry the approval args — treat receiver endpoints as sensitive.
+- **Slack (inbound)** — interactivity callbacks are verified with Slack's v0 HMAC scheme (channel signing secret, 5-minute replay window) and then mapped through an explicit Slack-user → operator binding. No binding, no decision: Slack display names are not identity. Bot token and signing secret are sealed in the vault at channel creation and never returned by the API.
+- **Email magic links (inbound)** — links are single-use tokens (only the SHA-256 is stored), bound to `{approval id, args hash, decision, operator}`, and expire no later than the approval itself. A replayed, expired, or args-mismatched link decides nothing. Threats accepted and mitigated: mail forwarding delegates the decision to whoever holds the inbox (bind recipients to real operators, keep approval TTLs short); mailbox scanners that prefetch URLs will consume a link — the response page states clearly whether a decision happened.
+
 ## Known gaps (tracked, not hidden)
 
 - **Operator auth**: per-operator keys, not passkeys/OIDC; no MFA yet (ADR 0006 follow-up).

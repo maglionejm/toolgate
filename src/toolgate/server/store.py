@@ -15,8 +15,11 @@ from toolgate.core import (
     Budget,
     Checkpoint,
     DelegationGrant,
+    Delivery,
+    NotificationChannel,
     Operator,
     Policy,
+    SlackBinding,
     Tenant,
     Upstream,
     User,
@@ -66,6 +69,21 @@ CREATE TABLE IF NOT EXISTS auth_failures (
     key TEXT PRIMARY KEY,
     count INTEGER NOT NULL,
     until_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    tenant_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    next_attempt_ms INTEGER NOT NULL,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt_ms);
+CREATE INDEX IF NOT EXISTS idx_deliveries_approval ON deliveries(approval_id);
+CREATE TABLE IF NOT EXISTS link_tokens (
+    token_hash TEXT PRIMARY KEY,
+    json TEXT NOT NULL,
+    consumed_at TEXT
 );
 """
 
@@ -287,6 +305,95 @@ class Store:
             "OR json_extract(json, '$.expiresAt') < ?)",
             (now_iso,),
         )
+
+    # -- notification channels ---------------------------------------------------------
+
+    def put_channel(self, c: NotificationChannel) -> None:
+        self._put("channel", c.id, c.tenantId, c.model_dump(mode="json", exclude_none=True))
+
+    def get_channel(self, channel_id: str) -> NotificationChannel | None:
+        return self._get_model("channel", channel_id, NotificationChannel)
+
+    def list_channels(self, tenant_id: str) -> list[NotificationChannel]:
+        return [NotificationChannel.model_validate(d) for d in self._list("channel", tenant_id)]
+
+    def delete_channel(self, channel_id: str) -> None:
+        self._doc_cache.pop(channel_id, None)
+        self.db.execute(
+            "DELETE FROM entities WHERE id = ? AND kind = 'channel'", (channel_id,)
+        )
+
+    def put_slack_binding(self, b: SlackBinding) -> None:
+        binding_id = f"slkb:{b.tenantId}:{b.slackUserId}"
+        self._put("slack_binding", binding_id, b.tenantId, b.model_dump(mode="json"))
+
+    def get_slack_binding(self, tenant_id: str, slack_user_id: str) -> SlackBinding | None:
+        return self._get_model(
+            "slack_binding", f"slkb:{tenant_id}:{slack_user_id}", SlackBinding
+        )
+
+    def list_slack_bindings(self, tenant_id: str) -> list[SlackBinding]:
+        return [SlackBinding.model_validate(d) for d in self._list("slack_binding", tenant_id)]
+
+    # -- deliveries --------------------------------------------------------------------
+
+    def put_delivery(self, d: Delivery) -> None:
+        next_ms = int(datetime.fromisoformat(d.nextAttemptAt).timestamp() * 1000)
+        self.db.execute(
+            "INSERT INTO deliveries (id, tenant_id, approval_id, status, next_attempt_ms, json) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET status = excluded.status, "
+            "next_attempt_ms = excluded.next_attempt_ms, json = excluded.json",
+            (
+                d.id,
+                d.tenantId,
+                d.approvalId,
+                d.status,
+                next_ms,
+                json.dumps(d.model_dump(mode="json", exclude_none=True)),
+            ),
+        )
+
+    def due_deliveries(self, now_ms: int | None = None, limit: int = 50) -> list[Delivery]:
+        now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
+        rows = self.db.execute(
+            "SELECT json FROM deliveries WHERE status = 'pending' AND next_attempt_ms <= ? "
+            "ORDER BY next_attempt_ms LIMIT ?",
+            (now_ms, limit),
+        ).fetchall()
+        return [Delivery.model_validate(json.loads(r[0])) for r in rows]
+
+    def deliveries_for_approval(self, approval_id: str) -> list[Delivery]:
+        rows = self.db.execute(
+            "SELECT json FROM deliveries WHERE approval_id = ? ORDER BY id", (approval_id,)
+        ).fetchall()
+        return [Delivery.model_validate(json.loads(r[0])) for r in rows]
+
+    # -- magic-link tokens -------------------------------------------------------------
+
+    def put_link_token(self, token_hash: str, doc: dict[str, Any]) -> None:
+        self.db.execute(
+            "INSERT INTO link_tokens (token_hash, json, consumed_at) VALUES (?, ?, NULL)",
+            (token_hash, json.dumps(doc)),
+        )
+
+    def consume_link_token(self, token_hash: str) -> tuple[str, dict[str, Any] | None]:
+        """Atomically consume a magic link. Returns (status, doc) where status
+        is 'ok' (consumed now), 'used' (already consumed), or 'unknown'."""
+        row = self.db.execute(
+            "SELECT json, consumed_at FROM link_tokens WHERE token_hash = ?", (token_hash,)
+        ).fetchone()
+        if row is None:
+            return "unknown", None
+        if row[1] is not None:
+            return "used", None
+        cursor = self.db.execute(
+            "UPDATE link_tokens SET consumed_at = ? WHERE token_hash = ? AND consumed_at IS NULL",
+            (datetime.now(UTC).isoformat(), token_hash),
+        )
+        if cursor.rowcount != 1:
+            return "used", None
+        return "ok", json.loads(row[0])
 
     # -- auth failure backoff ----------------------------------------------------------
 

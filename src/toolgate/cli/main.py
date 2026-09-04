@@ -1,6 +1,7 @@
 """Toolgate CLI assembly: root app, global options, top-level commands.
 Command groups live in registry.py (identities/tools), governance.py
-(grants/approvals/operators), and forensics.py (audit/token/dev)."""
+(grants/approvals/operators), channels.py (notifications), and forensics.py
+(audit/token/dev)."""
 
 from typing import Annotated
 
@@ -10,7 +11,7 @@ from rich.panel import Panel
 
 from toolgate import __version__
 
-from . import forensics, governance, registry  # noqa: F401 — attaches commands
+from . import channels, forensics, governance, registry  # noqa: F401 — attaches commands
 from .client import err_console
 from .config import save_profile
 from .shared import (
@@ -18,6 +19,7 @@ from .shared import (
     agents_app,
     approvals_app,
     audit_app,
+    channels_app,
     client,
     console,
     dev_app,
@@ -26,6 +28,7 @@ from .shared import (
     keys_app,
     operators_app,
     policies_app,
+    slack_app,
     state,
     tenants_app,
     token_app,
@@ -48,6 +51,8 @@ for name, sub in [
     ("token", token_app),
     ("dev", dev_app),
     ("operators", operators_app),
+    ("channels", channels_app),
+    ("slack", slack_app),
 ]:
     app.add_typer(sub, name=name)
 
