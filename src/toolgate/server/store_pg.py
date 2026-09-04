@@ -17,6 +17,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from toolgate.core import Upstream
+
 from .store import Store
 
 _PG_SCHEMA = """
@@ -143,6 +145,14 @@ class PostgresStore(Store):
         return model.model_validate(doc) if doc is not None else None
 
     # -- JSON path dialect --------------------------------------------------------------
+
+    def find_upstream_by_name(self, tenant_id: str, name: str) -> Any:
+        row = self.db.execute(
+            "SELECT id FROM entities WHERE kind = 'upstream' AND tenant_id = ? "
+            "AND json::jsonb->>'name' = ?",
+            (tenant_id, name),
+        ).fetchone()
+        return self._get_model("upstream", row[0], Upstream) if row else None
 
     def claim_approval_for_execution(self, approval_id: str) -> bool:
         cursor = self.db.execute(
