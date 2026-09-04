@@ -376,21 +376,27 @@ class Store:
 
     # -- txn taint -------------------------------------------------------------------
 
-    def mark_txn_tainted(self, txn: str, ttl_seconds: int = 86_400) -> None:
-        """The task behind this txn consumed untrusted content; policies with
-        when.txnTouchedUntrusted react to it for the rest of the task."""
+    def mark_taint(self, keys: list[str], ttl_seconds: int = 86_400) -> None:
+        """The task behind these keys consumed untrusted content. Keys are the
+        txn id and (always, so operators can widen scope later without data
+        loss) the grant scope key `grant:<id>`."""
         expires = int(time.time() * 1000) + ttl_seconds * 1000
-        self.db.execute(
-            "INSERT INTO txn_taint (txn, expires_at) VALUES (?, ?) "
-            "ON CONFLICT(txn) DO UPDATE SET expires_at = excluded.expires_at",
-            (txn, expires),
-        )
+        for key in keys:
+            self.db.execute(
+                "INSERT INTO txn_taint (txn, expires_at) VALUES (?, ?) "
+                "ON CONFLICT(txn) DO UPDATE SET expires_at = excluded.expires_at",
+                (key, expires),
+            )
 
-    def is_txn_tainted(self, txn: str) -> bool:
-        row = self.db.execute(
-            "SELECT expires_at FROM txn_taint WHERE txn = ?", (txn,)
-        ).fetchone()
-        return bool(row and row[0] > int(time.time() * 1000))
+    def is_tainted(self, keys: list[str]) -> bool:
+        now = int(time.time() * 1000)
+        for key in keys:
+            row = self.db.execute(
+                "SELECT expires_at FROM txn_taint WHERE txn = ?", (key,)
+            ).fetchone()
+            if row and row[0] > now:
+                return True
+        return False
 
     def close(self) -> None:
         self.db.close()

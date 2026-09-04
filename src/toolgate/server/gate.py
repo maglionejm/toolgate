@@ -76,7 +76,10 @@ async def run_gate_call(
     upstream, tool_def = _resolve_tool(ctx, claims.tenant, upstream_name, tool)
 
     call_id = new_id("call")
-    tainted = ctx.store.is_txn_tainted(claims.txn)
+    taint_keys = [claims.txn]
+    if ctx.config.taint_scope == "grant":
+        taint_keys.append(f"grant:{grant.id}")
+    tainted = ctx.store.is_tainted(taint_keys)
     call = ToolCallContext(
         upstream=upstream_name,
         tool=tool,
@@ -468,9 +471,10 @@ async def _execute_call(
         )
     )
     if tool_def.contentTrust == "untrusted_source":
-        # The task has now consumed attacker-influenced content: taint the txn
-        # so when.txnTouchedUntrusted policies react for the rest of the task.
-        ctx.store.mark_txn_tainted(txn)
+        # The task consumed attacker-influenced content: taint the txn and the
+        # grant scope key so when.txnTouchedUntrusted policies react (grant
+        # scope closes txn-splitting when TOOLGATE_TAINT_SCOPE=grant).
+        ctx.store.mark_taint([txn, f"grant:{grant.id}"])
     return body
 
 

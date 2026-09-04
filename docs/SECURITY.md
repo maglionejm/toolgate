@@ -69,6 +69,17 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 - **Anchoring** ships as a webhook witness; Rekor inclusion/consistency proofs pending (#12).
 - **Taint** is binary and per-txn; field-level dataflow is future work (ADR 0008).
 
+## Red-team findings register
+
+The adversarial suite (`tests/redteam/`, CI job `redteam`) asserts every guarantee below; a successful attack fails the build.
+
+| Finding | Status |
+| --- | --- |
+| Taint laundering via txn-splitting (fresh token = clean txn) | **Accepted risk under default `taint_scope=txn`**; closed by `TOOLGATE_TAINT_SCOPE=grant` (one untrusted read then taints the whole delegation). Choose per deployment. |
+| History rewrite by an adversary holding the *current* gate key | Future records are theirs by definition; rewrites of anchored history are detected by checkpoint verification. Anchor externally (`TOOLGATE_ANCHOR_URL`). |
+| Forged rotation handoffs / unintroduced kids | Rejected by lineage verification (chain breaks at the forged record). |
+| Stolen MCP bearer token | Bounded: authorization_details ∩ policy ∩ budget ∩ TTL; PoP surfaces unusable; revocation immediate. |
+
 ## Reporting
 
 Security reports: open a private security advisory on the GitHub repository. Do not file public issues for exploitable findings.
