@@ -34,7 +34,7 @@ from .anchor import AnchorWorker, RekorSink
 from .notifier import Notifier
 from .ratelimit import SlidingWindowLimiter
 from .store import Store
-from .vault import Vault
+from .vault import AwsKmsProvider, EnvKekProvider, GcpKmsProvider, KekProvider, Vault
 
 
 @dataclass(frozen=True)
@@ -281,6 +281,7 @@ def create_app_context(
     notify_http: httpx.Client | None = None,
     rekor_http: httpx.Client | None = None,
     mailer: object | None = None,
+    vault_provider: KekProvider | None = None,
 ) -> AppContext:
     """Build the application context.
 
@@ -296,19 +297,66 @@ def create_app_context(
     store = Store(db_path or os.environ.get("TOOLGATE_DB", "toolgate.db"))
 
     master = master_key or os.environ.get("TOOLGATE_MASTER_KEY")
-    if not master:
-        if not dev_mode:
+    provider_name = os.environ.get("TOOLGATE_VAULT_PROVIDER", "env")
+    provider: KekProvider | None = vault_provider
+
+    if provider is None and provider_name in ("gcp-kms", "aws-kms"):
+        # KMS custody: the KEK never leaves the cloud KMS; the master key is
+        # only needed (optionally) to open legacy v1 blobs pending migration.
+        kms_key = os.environ.get("TOOLGATE_KMS_KEY")
+        if not kms_key:
             raise RuntimeError(
-                "TOOLGATE_MASTER_KEY is required. Refusing to fall back to a key stored "
-                "alongside the sealed secrets. Set TOOLGATE_MASTER_KEY, or set TOOLGATE_DEV=1 "
-                "for local development."
+                f"TOOLGATE_KMS_KEY is required for vault provider {provider_name!r} "
+                "(the KMS key resource name / ARN wrapping the data keys)."
             )
-        master = store.get_setting("dev_master_key") or secrets.token_urlsafe(32)
-        store.set_setting("dev_master_key", master)
-        print(
-            "[toolgate] DEV MODE: vault master key stored alongside data. "
-            "Set TOOLGATE_MASTER_KEY in production."
+        provider = (
+            GcpKmsProvider(kms_key) if provider_name == "gcp-kms" else AwsKmsProvider(kms_key)
         )
+    elif provider is None and provider_name != "env":
+        raise RuntimeError(
+            f"unknown vault provider {provider_name!r}: use env, gcp-kms, or aws-kms"
+        )
+
+    if provider is None:
+        # env provider: secrets are only as safe as the process environment.
+        # Production must opt into that custody model explicitly (#8).
+        allow_env = (os.environ.get("TOOLGATE_VAULT_ALLOW_ENV") or "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        if not dev_mode and not allow_env:
+            raise RuntimeError(
+                "refusing the env vault provider in production: whoever reads the "
+                "environment holds every upstream credential. Configure "
+                "TOOLGATE_VAULT_PROVIDER=gcp-kms|aws-kms (+TOOLGATE_KMS_KEY), or "
+                "explicitly accept env custody with TOOLGATE_VAULT_ALLOW_ENV=1."
+            )
+        if not master:
+            if not dev_mode:
+                raise RuntimeError(
+                    "TOOLGATE_MASTER_KEY is required. Refusing to fall back to a key stored "
+                    "alongside the sealed secrets. Set TOOLGATE_MASTER_KEY, or set "
+                    "TOOLGATE_DEV=1 for local development."
+                )
+            master = store.get_setting("dev_master_key") or secrets.token_urlsafe(32)
+            store.set_setting("dev_master_key", master)
+            print(
+                "[toolgate] DEV MODE: vault master key stored alongside data. "
+                "Set TOOLGATE_MASTER_KEY in production."
+            )
+        previous = tuple(
+            k.strip()
+            for k in os.environ.get("TOOLGATE_MASTER_KEY_PREVIOUS", "").split(",")
+            if k.strip()
+        )
+        provider = EnvKekProvider(master, previous)
+
+    vault = Vault(master, provider=provider)
+    try:
+        # Fail closed: an unreachable or misconfigured KMS aborts the boot —
+        # no silent fallback provider is ever substituted.
+        vault.self_test()
+    except Exception as err:
+        raise RuntimeError(f"vault provider self-test failed (fail-closed): {err}") from err
 
     admin = admin_key or os.environ.get("TOOLGATE_ADMIN_KEY")
     if not admin:
@@ -343,7 +391,7 @@ def create_app_context(
     control_keys = control_keyset[0]
     ctx = AppContext(
         store=store,
-        vault=Vault(master),
+        vault=vault,
         audit=AuditLog(
             store,
             gate_keyset,

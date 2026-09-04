@@ -37,6 +37,8 @@ dependencies = [
 langchain = ["langchain-core>=0.3"]
 demo = ["anthropic>=0.69"]
 s3 = ["boto3>=1.34"]
+aws = ["boto3>=1.34"]
+gcp = ["google-cloud-kms>=2.21"]
 
 [dependency-groups]
 dev = [

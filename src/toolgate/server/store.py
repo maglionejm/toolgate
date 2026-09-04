@@ -50,7 +50,10 @@ CREATE TABLE IF NOT EXISTS used_jtis (
 CREATE TABLE IF NOT EXISTS secrets (
     ref TEXT PRIMARY KEY,
     iv TEXT NOT NULL,
-    ct TEXT NOT NULL
+    ct TEXT NOT NULL,
+    v INTEGER NOT NULL DEFAULT 1,
+    kek_id TEXT,
+    wrapped_dek TEXT
 );
 CREATE TABLE IF NOT EXISTS audit (
     seq INTEGER PRIMARY KEY,
@@ -103,6 +106,16 @@ class Store:
                 os.chmod(path, 0o600)
         self.db.execute("PRAGMA journal_mode = WAL;")
         self.db.executescript(_SCHEMA)
+        # Pre-0.5 databases lack the envelope columns; CREATE TABLE IF NOT
+        # EXISTS never alters existing tables, so add them in place.
+        existing = {row[1] for row in self.db.execute("PRAGMA table_info(secrets)")}
+        for column, decl in (
+            ("v", "INTEGER NOT NULL DEFAULT 1"),
+            ("kek_id", "TEXT"),
+            ("wrapped_dek", "TEXT"),
+        ):
+            if column not in existing:
+                self.db.execute(f"ALTER TABLE secrets ADD COLUMN {column} {decl}")
         # Parsed-document cache: pydantic validation dominates read cost on the
         # gate hot path. Invalidated on every write; callers get shallow copies
         # so top-level mutation cannot poison the cache.
@@ -450,14 +463,23 @@ class Store:
 
     def put_secret(self, ref: str, sealed: SealedSecret) -> None:
         self.db.execute(
-            "INSERT INTO secrets (ref, iv, ct) VALUES (?, ?, ?) "
-            "ON CONFLICT(ref) DO UPDATE SET iv = excluded.iv, ct = excluded.ct",
-            (ref, sealed.iv, sealed.ct),
+            "INSERT INTO secrets (ref, iv, ct, v, kek_id, wrapped_dek) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(ref) DO UPDATE SET iv = excluded.iv, ct = excluded.ct, "
+            "v = excluded.v, kek_id = excluded.kek_id, wrapped_dek = excluded.wrapped_dek",
+            (ref, sealed.iv, sealed.ct, sealed.v, sealed.kekId, sealed.wrappedDek),
         )
 
     def get_secret(self, ref: str) -> SealedSecret | None:
-        row = self.db.execute("SELECT iv, ct FROM secrets WHERE ref = ?", (ref,)).fetchone()
-        return SealedSecret(iv=row[0], ct=row[1]) if row else None
+        row = self.db.execute(
+            "SELECT iv, ct, v, kek_id, wrapped_dek FROM secrets WHERE ref = ?", (ref,)
+        ).fetchone()
+        if row is None:
+            return None
+        return SealedSecret(iv=row[0], ct=row[1], v=row[2], kekId=row[3], wrappedDek=row[4])
+
+    def list_secret_refs(self) -> list[str]:
+        return [r[0] for r in self.db.execute("SELECT ref FROM secrets ORDER BY ref").fetchall()]
 
     # -- audit -------------------------------------------------------------------------
 

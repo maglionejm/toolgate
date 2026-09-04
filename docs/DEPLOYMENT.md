@@ -14,14 +14,44 @@ All configuration is environment-based. There are no config files.
 
 | Variable | Required in prod | Default | Purpose |
 | --- | --- | --- | --- |
-| `TOOLGATE_MASTER_KEY` | **yes** | dev fallback stored in DB + warning | Vault sealing key (AES-256-GCM). Losing it orphans all sealed upstream secrets. |
+| `TOOLGATE_VAULT_PROVIDER` | recommended | `env` | Secret custody: `env`, `gcp-kms`, or `aws-kms`. Production **refuses** `env` unless `TOOLGATE_VAULT_ALLOW_ENV=1` (see below). |
+| `TOOLGATE_KMS_KEY` | with a KMS provider | — | KEK reference: GCP crypto-key resource name, or AWS KMS key id/ARN. |
+| `TOOLGATE_MASTER_KEY` | with `env` provider | dev fallback stored in DB + warning | Vault KEK source for the `env` provider; also opens legacy v1 blobs pending `toolgate vault migrate`. Losing it orphans v1 secrets. |
+| `TOOLGATE_MASTER_KEY_PREVIOUS` | no | — | Comma-separated old master keys kept unwrap-able during an env-provider KEK rotation window. |
 | `TOOLGATE_ADMIN_KEY` | **yes** | generated + persisted; only its fingerprint is logged at boot (never the key itself) | Control-plane authentication |
 | `TOOLGATE_PUBLIC_URL` | **yes** | `http://localhost:8484` | External base URL. **Must match exactly what clients use** — PoP proofs bind to it (`htu`). Behind a proxy, set it to the public origin. |
 | `TOOLGATE_ISSUER` | no | = public URL | Token `iss` |
 | `TOOLGATE_DB` | no | `toolgate.db` | SQLite path |
 | `PORT` | no | `8484` | Listen port |
 
-Startup check: run with all four production variables set; the boot log must **not** contain the DEV MODE vault warning.
+Startup check: run with the production variables set; the boot log must **not** contain the DEV MODE vault warning. Boot is fail-closed: an unreachable or misconfigured KMS aborts with a self-test error rather than silently falling back.
+
+### Vault custody (KMS envelope encryption)
+
+Every secret is sealed under its own data key (DEK); only the KMS-wrapped DEK is stored. Nothing in the database decrypts without the KEK, and the KEK never leaves the KMS.
+
+**GCP** (`pip install 'toolgate-io[gcp]'`):
+
+```bash
+gcloud kms keyrings create toolgate --location=global
+gcloud kms keys create vault-kek --location=global --keyring=toolgate --purpose=encryption
+# service account needs roles/cloudkms.cryptoKeyEncrypterDecrypter
+TOOLGATE_VAULT_PROVIDER=gcp-kms \
+TOOLGATE_KMS_KEY=projects/PROJECT/locations/global/keyRings/toolgate/cryptoKeys/vault-kek \
+toolgate server
+```
+
+**AWS** (`pip install 'toolgate-io[aws]'`):
+
+```bash
+aws kms create-key --description "toolgate vault KEK"
+# instance/task role needs kms:Encrypt + kms:Decrypt on the key
+TOOLGATE_VAULT_PROVIDER=aws-kms TOOLGATE_KMS_KEY=arn:aws:kms:...:key/... toolgate server
+```
+
+Migrating an existing (v1, master-key) store: boot with the KMS provider **plus** the old `TOOLGATE_MASTER_KEY`, run `toolgate vault migrate`, verify `toolgate vault status` shows zero v1 blobs, then drop the master key from the environment.
+
+The `env` provider remains the single-host/dev custody model; accepting it in production requires `TOOLGATE_VAULT_ALLOW_ENV=1` — an explicit statement that whoever reads the environment holds every upstream credential.
 
 ## Local / bare process
 
