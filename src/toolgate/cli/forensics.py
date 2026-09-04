@@ -10,9 +10,11 @@ from rich.panel import Panel
 from toolgate.core import (
     AuditRecord,
     Checkpoint,
+    detect_anchor_divergence,
     verify_audit_chain,
     verify_capability_token,
     verify_checkpoint,
+    verify_checkpoint_anchor,
 )
 
 from .client import err_console
@@ -52,6 +54,18 @@ def audit_verify(
     jwk_file: Annotated[
         Path | None,
         typer.Option("--jwk", help="Gate public JWK (offline; default fetches /v1/keys)."),
+    ] = None,
+    rekor: Annotated[
+        bool,
+        typer.Option(
+            "--rekor",
+            help="Also verify transparency-log anchors: inclusion proofs, log "
+            "signature (pinned trust root), and divergence against the chain.",
+        ),
+    ] = False,
+    trust_root: Annotated[
+        Path | None,
+        typer.Option("--trust-root", help="Pinned log public key (PEM) for --rekor."),
     ] = None,
 ) -> None:
     """Verify the audit chain — server-side, or fully offline from an export."""
@@ -95,13 +109,88 @@ def audit_verify(
         ),
     }
     ok = result.valid and cp_valid == len(checkpoints)
+    anchor_line = ""
+
+    if rekor:
+        if trust_root is None:
+            err_console.print(
+                "[bold red]--rekor requires --trust-root[/] — anchored verification only "
+                "means something against a log key obtained OUT-OF-BAND, never from the "
+                "server being audited."
+            )
+            raise typer.Exit(1)
+        pem = trust_root.read_bytes()
+        anchored = [c for c in checkpoints if c.anchor]
+        anchors_valid = sum(1 for c in anchored if verify_checkpoint_anchor(c, pem))
+        divergences = detect_anchor_divergence(records, checkpoints)
+        payload.update(
+            {
+                "anchors_valid": anchors_valid,
+                "anchors_total": len(anchored),
+                "checkpoints_unanchored": len(checkpoints) - len(anchored),
+                "divergences": divergences,
+            }
+        )
+        ok = ok and anchors_valid == len(anchored) and not divergences
+        anchor_line = (
+            f" · anchors {anchors_valid}/{len(anchored)} "
+            f"({len(checkpoints) - len(anchored)} unanchored)"
+        )
+        if divergences:
+            anchor_line += (
+                f" · [bold red]DIVERGENCE at seq "
+                f"{', '.join(str(d['seq']) for d in divergences)}[/] — the presented "
+                f"history does not match what was anchored"
+            )
+
     emit(
         payload,
         f"[{'green' if ok else 'red'}]valid: {result.valid}[/] · length {result.length}"
         + f" · checkpoints {cp_valid}/{len(checkpoints)}"
+        + anchor_line
         + (f" · broken at seq {result.broken_at_seq}: {result.reason}" if not result.valid else ""),
     )
     raise typer.Exit(0 if ok else 2)
+
+
+@audit_app.command("worm-export")
+def audit_worm_export(
+    directory: Annotated[
+        Path | None, typer.Option("--dir", help="Write-once directory export.")
+    ] = None,
+    s3_bucket: Annotated[
+        str | None,
+        typer.Option("--s3-bucket", help="S3 bucket with Object Lock enabled."),
+    ] = None,
+    s3_prefix: Annotated[str, typer.Option("--s3-prefix")] = "toolgate-audit/",
+    retention_days: Annotated[
+        int, typer.Option("--retention-days", help="Retention period (default >= 6 months).")
+    ] = 183,
+) -> None:
+    """Immutable retention export: bundle + SHA-256 manifest under a write-once
+    policy (filesystem O_EXCL/read-only, or S3 Object Lock COMPLIANCE).
+    Schedule this via cron/systemd timer."""
+    from toolgate.worm import export_bundle_fs, export_bundle_s3
+
+    if (directory is None) == (s3_bucket is None):
+        err_console.print("[bold red]pick exactly one destination[/]: --dir or --s3-bucket")
+        raise typer.Exit(1)
+    bundle = client().get("/v1/control/audit/bundle")
+    try:
+        if directory is not None:
+            entry = export_bundle_fs(bundle, directory, retention_days)
+        else:
+            assert s3_bucket is not None
+            entry = export_bundle_s3(bundle, s3_bucket, s3_prefix, retention_days)
+    except (RuntimeError, OSError) as err:
+        err_console.print(f"[bold red]worm export failed[/] {escape(str(err))}")
+        raise typer.Exit(1) from err
+    emit(
+        entry,
+        f"[green]worm export written[/] {entry['file']} · {entry['records']} records · "
+        f"{entry['anchored']}/{entry['checkpoints']} checkpoints anchored\n"
+        f"sha256 {entry['sha256']} · retained until {entry['retainUntil'][:10]}",
+    )
 
 
 @audit_app.command("export")

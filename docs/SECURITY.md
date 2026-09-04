@@ -36,7 +36,7 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 | T10 | Cross-tenant access | Tenant claim in token; upstream/approval/audit lookups tenant-scoped | Gate | partial (see gaps) |
 | T11 | Token minted for agent A used by agent B | `cnf.jkt` is A's key thumbprint; B cannot produce proofs | Gate | yes |
 | T13 | Body substitution under a captured proof | Proof v2 `cd` claim binds the exact request bytes | Gate | yes |
-| T14 | Gate-key compromise -> silent history re-signing | Merkle checkpoints + anchoring; rotation lineage in-chain | Audit | yes |
+| T14 | Gate-key compromise -> silent history re-signing | Merkle checkpoints anchored in a transparency log (inclusion proofs, pinned log key); offline divergence detection; WORM retention | Audit | yes |
 | T15 | Tool-chain exfiltration (lethal trifecta) | txn taint + `when.txnTouchedUntrusted` policies | Gate + policy | yes |
 | T16 | Anonymous or over-broad admin actions | Operator identities + roles; break-glass audited | Control plane | yes |
 | T12 | Approval fatigue as an attack surface (OWASP T10) | Policy tiers: allow routine, approve consequential; budgets cap the rest | Policy design | design-level |
@@ -74,7 +74,7 @@ Decisions can arrive from outside the console; each channel authenticates differ
 - **MCP surface** trades PoP sender-binding for ecosystem compatibility (ADR 0009); set `mcp_enabled=False` to refuse it.
 - **Tenant isolation** relies on application-level filters over a shared SQLite file; no per-tenant encryption.
 - **Vault** master key is env-based; KMS envelope encryption pending (#8).
-- **Anchoring** ships as a webhook witness; Rekor inclusion/consistency proofs pending (#12).
+- **Anchoring** verifies against a Rekor-*compatible* log (hashedrekord submission, RFC 6962 inclusion proofs, pinned log key); an adapter for production Rekor's exact SET/checkpoint-note format is follow-up work.
 - **Taint** is binary and per-txn; field-level dataflow is future work (ADR 0008).
 
 ## Red-team findings register

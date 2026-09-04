@@ -275,6 +275,8 @@ def verify_checkpoint(
         return False
     body = checkpoint.model_dump(mode="json", exclude_none=True)
     body.pop("sig")
+    # Anchor evidence is attached after signing; it is never part of the body.
+    body.pop("anchor", None)
     if _is_jwks_mapping(gate_public_jwk):
         candidate = gate_public_jwk.get(checkpoint.sigKid)  # type: ignore[union-attr]
         key = _coerce_verify_key(candidate) if candidate is not None else None
@@ -283,3 +285,120 @@ def verify_checkpoint(
     if key is None:
         return False
     return _verify_hash_signature(sha256_hex(canonical_json(body)), checkpoint.sig, key)
+
+
+# ---------------------------------------------------------------------------
+# Transparency-log anchoring (#12). A checkpoint's canonical signed bytes are
+# submitted to a Rekor-compatible log (hashedrekord shape); the log's inclusion
+# proof plus a pinned log key make history rewriting detectable even by a
+# verifier that trusts NO Toolgate key.
+# ---------------------------------------------------------------------------
+
+
+def checkpoint_anchor_digest(checkpoint: Checkpoint) -> str:
+    """SHA-256 (hex) of the checkpoint's canonical signed bytes — the exact
+    data value submitted to the log. Binds seq, root, ts, kid, AND signature."""
+    body = checkpoint.model_dump(mode="json", exclude_none=True)
+    body.pop("anchor", None)
+    return sha256_hex(canonical_json(body))
+
+
+def anchor_leaf_hash(data_digest_hex: str) -> bytes:
+    """RFC 6962 leaf hash over the submitted 32-byte data digest."""
+    return hashlib.sha256(b"\x00" + bytes.fromhex(data_digest_hex)).digest()
+
+
+def verify_inclusion_proof(
+    leaf_hash: bytes, index: int, tree_size: int, proof: list[bytes], root: bytes
+) -> bool:
+    """RFC 9162 §2.1.3.2 audit-path verification."""
+    if index >= tree_size:
+        return False
+    fn, sn = index, tree_size - 1
+    result = leaf_hash
+    for node in proof:
+        if sn == 0:
+            return False
+        if fn % 2 == 1 or fn == sn:
+            result = hashlib.sha256(b"\x01" + node + result).digest()
+            if fn % 2 == 0:
+                while fn % 2 == 0 and fn != 0:
+                    fn >>= 1
+                    sn >>= 1
+        else:
+            result = hashlib.sha256(b"\x01" + result + node).digest()
+        fn >>= 1
+        sn >>= 1
+    return sn == 0 and result == root
+
+
+def _load_trust_root(trust_root_pem: bytes) -> Any:
+    from cryptography.hazmat.primitives.serialization import load_pem_public_key
+
+    return load_pem_public_key(trust_root_pem)
+
+
+def verify_checkpoint_anchor(checkpoint: Checkpoint, trust_root_pem: bytes) -> bool:
+    """Verify a checkpoint's transparency-log evidence offline:
+
+    1. the anchored data digest matches the checkpoint's canonical signed bytes,
+    2. the RFC 6962 inclusion proof chains the leaf to the log root,
+    3. the log's signature over {logId, treeSize, rootHash} verifies under the
+       PINNED trust root — not any key the audited server serves.
+    """
+    anchor = checkpoint.anchor
+    if not anchor:
+        return False
+    try:
+        digest = checkpoint_anchor_digest(checkpoint)
+        leaf = anchor_leaf_hash(digest)
+        proof = [bytes.fromhex(h) for h in anchor["hashes"]]
+        root = bytes.fromhex(anchor["rootHash"])
+        if not verify_inclusion_proof(
+            leaf, int(anchor["logIndex"]), int(anchor["treeSize"]), proof, root
+        ):
+            return False
+        signed_body = canonical_json(
+            {
+                "logId": anchor["logId"],
+                "rootHash": anchor["rootHash"],
+                "treeSize": int(anchor["treeSize"]),
+            }
+        ).encode()
+        key = _load_trust_root(trust_root_pem)
+        signature = base64.b64decode(anchor["signedRoot"])
+        if isinstance(key, Ed25519PublicKey):
+            key.verify(signature, signed_body)
+        else:
+            from cryptography.hazmat.primitives import hashes as _hashes
+            from cryptography.hazmat.primitives.asymmetric import ec
+
+            key.verify(signature, signed_body, ec.ECDSA(_hashes.SHA256()))
+        return True
+    except (KeyError, ValueError, TypeError, InvalidSignature):
+        return False
+
+
+def detect_anchor_divergence(
+    records: list[AuditRecord], checkpoints: list[Checkpoint]
+) -> list[dict[str, Any]]:
+    """Compare anchored checkpoint roots against roots recomputed from the
+    presented chain. An attacker holding every current gate key can re-sign a
+    rewritten history and fresh checkpoints — but cannot alter what was already
+    anchored. Any mismatch at an anchored seq is a divergence."""
+    divergences = []
+    hashes = [r.hash for r in records]
+    for cp in checkpoints:
+        if not cp.anchor:
+            continue
+        actual = merkle_root(hashes[: cp.seq]) if cp.seq <= len(hashes) else None
+        if actual != cp.root:
+            divergences.append(
+                {
+                    "seq": cp.seq,
+                    "anchoredRoot": cp.root,
+                    "recomputedRoot": actual,
+                    "logIndex": cp.anchor.get("logIndex"),
+                }
+            )
+    return divergences

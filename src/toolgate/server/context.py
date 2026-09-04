@@ -30,6 +30,7 @@ from toolgate.core import (
     verify_checkpoint,
 )
 
+from .anchor import AnchorWorker, RekorSink
 from .notifier import Notifier
 from .ratelimit import SlidingWindowLimiter
 from .store import Store
@@ -60,6 +61,9 @@ class ServerConfig:
     checkpoint_interval: int = 64
     # Optional external witness: each checkpoint is POSTed here (fire-and-forget).
     anchor_url: str | None = None
+    # Rekor-compatible transparency log; checkpoints are anchored with stored
+    # inclusion proofs (TOOLGATE_REKOR_URL). See docs/OPERATIONS.md R7.
+    rekor_url: str | None = None
     # MCP surface (/v1/mcp): bearer-token auth without PoP proofs (ADR 0009).
     mcp_enabled: bool = True
     # Taint scope: "txn" (per task token) or "grant" (whole delegation). Grant
@@ -209,6 +213,8 @@ class AppContext:
     # Approval push notifications (webhook/Slack/email). Set right after
     # construction; None only in exotic embedding scenarios.
     notifier: Notifier | None = None
+    # Transparency-log anchoring; None unless a Rekor URL is configured.
+    anchor_worker: AnchorWorker | None = None
 
     def rotate_control_key(self) -> KeyPairJwk:
         new_keys = generate_ed25519_key_pair()
@@ -270,8 +276,10 @@ def create_app_context(
     master_key: str | None = None,
     dev_mode: bool = True,
     anchor_url: str | None = None,
+    rekor_url: str | None = None,
     http_client: httpx.AsyncClient | None = None,
     notify_http: httpx.Client | None = None,
+    rekor_http: httpx.Client | None = None,
     mailer: object | None = None,
 ) -> AppContext:
     """Build the application context.
@@ -320,6 +328,7 @@ def create_app_context(
         admin_key=admin,
         allow_insecure_upstreams=dev_mode,
         anchor_url=anchor_url or os.environ.get("TOOLGATE_ANCHOR_URL"),
+        rekor_url=rekor_url or os.environ.get("TOOLGATE_REKOR_URL"),
         taint_scope=os.environ.get("TOOLGATE_TAINT_SCOPE", "txn"),
         trusted_proxies=tuple(
             p.strip()
@@ -363,4 +372,6 @@ def create_app_context(
         http=notify_http,
         mailer=mailer,  # type: ignore[arg-type]
     )
+    if config.rekor_url:
+        ctx.anchor_worker = AnchorWorker(store, RekorSink(config.rekor_url, http=rekor_http))
     return ctx
