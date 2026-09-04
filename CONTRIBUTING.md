@@ -6,6 +6,7 @@ Thanks for your interest in Toolgate. The project is early and moving fast; this
 
 - **Everything goes through issues and pull requests.** No direct pushes to `main`.
 - Open or claim an issue before large changes — the [issue tracker](../../issues) is the roadmap.
+- Roadmap issues are spec-driven: each maps to a change package under [`openspec/changes/`](openspec/changes/) (proposal, normative requirements with scenarios, task checklist). Validate edits with `npx @fission-ai/openspec validate --all`. Implement against the spec; archive the change package when it ships.
 - Branch from `main`, keep PRs focused, and reference the issue (`Closes #N`).
 - CI must be green: `ruff check` + the full test suite.
 
