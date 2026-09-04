@@ -210,11 +210,23 @@ def server() -> None:
 
 
 @app.command()
-def demo() -> None:
-    """Run the six-act end-to-end demo."""
-    from toolgate.demo import main as demo_main
+def demo(
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Drive the demo with a real Claude model, including the "
+        "prompt-injection containment act (needs ANTHROPIC_API_KEY).",
+    ),
+) -> None:
+    """Run the end-to-end demo (scripted, or --live with a real model)."""
+    if live:
+        from toolgate.demo_live import main as live_main
 
-    demo_main()
+        live_main()
+    else:
+        from toolgate.demo import main as demo_main
+
+        demo_main()
 
 
 

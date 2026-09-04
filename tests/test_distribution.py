@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from toolgate.core import generate_ed25519_key_pair, sign_client_assertion
-from toolgate.integrations import openai_tools
+from toolgate.integrations import anthropic_tools, openai_tools
 from toolgate.sdk import AsyncToolgateClient, PendingApproval, ToolgateClient
 from toolgate.server import create_app, create_app_context
 
@@ -210,6 +210,21 @@ def test_openai_adapter_schema_and_dispatch(env: Env) -> None:
     assert names == {"crm__read_contact", "crm__wire_money"}
 
     out = dispatch("crm__read_contact", {"contactId": "c2"})
+    assert out == {"status": "executed", "result": {"ok": 1}}
+    parked = dispatch("crm__wire_money", {"amount": 9})
+    assert parked["status"] == "pending_approval"
+    assert dispatch("bad-name", {})["error"].startswith("tool name must be")
+
+
+def test_anthropic_adapter_schema_and_dispatch(env: Env) -> None:
+    tools, dispatch = anthropic_tools(env.sync_client())
+    by_name = {t["name"]: t for t in tools}
+    assert set(by_name) == {"crm__read_contact", "crm__wire_money"}
+    # Declared schemas pass through; tools without one get an open object schema.
+    assert by_name["crm__read_contact"]["input_schema"]["required"] == ["contactId"]
+    assert by_name["crm__wire_money"]["input_schema"]["type"] == "object"
+
+    out = dispatch("crm__read_contact", {"contactId": "c3"})
     assert out == {"status": "executed", "result": {"ok": 1}}
     parked = dispatch("crm__wire_money", {"amount": 9})
     assert parked["status"] == "pending_approval"
