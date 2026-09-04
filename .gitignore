@@ -9,6 +9,8 @@ dist/
 .env
 .env.*
 *.db
+*.db-wal
+*.db-shm
 *.db-journal
 *.sqlite
 .DS_Store
