@@ -316,7 +316,9 @@ def create_app_context(
         anchor_url=anchor_url or os.environ.get("TOOLGATE_ANCHOR_URL"),
         taint_scope=os.environ.get("TOOLGATE_TAINT_SCOPE", "txn"),
         trusted_proxies=tuple(
-            p.strip() for p in os.environ.get("TOOLGATE_TRUSTED_PROXIES", "").split(",") if p.strip()
+            p.strip()
+            for p in os.environ.get("TOOLGATE_TRUSTED_PROXIES", "").split(",")
+            if p.strip()
         ),
     )
 
