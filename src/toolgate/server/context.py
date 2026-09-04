@@ -32,8 +32,9 @@ from toolgate.core import (
 
 from .anchor import AnchorWorker, RekorSink
 from .notifier import Notifier
-from .ratelimit import SlidingWindowLimiter
+from .ratelimit import DbRateLimiter, SlidingWindowLimiter
 from .store import Store
+from .store_pg import PostgresStore, open_store
 from .vault import AwsKmsProvider, EnvKekProvider, GcpKmsProvider, KekProvider, Vault
 
 
@@ -109,14 +110,19 @@ class AuditLog:
         return {k.kid: k.public_jwk for k in self._keyset}
 
     def record(self, record_input: AuditRecordInput) -> AuditRecord:
-        record = append_audit_record(
-            self._last, record_input, self._signing_key, sig_kid=self._sig_kid
-        )
-        self._store.append_audit(record)
-        self._last = record
-        if record.seq % self._checkpoint_interval == 0:
-            self.checkpoint()
-        return record
+        # Chain appends are serialized by the seq primary key: when another
+        # instance wins the slot, rebase on the stored tail and re-sign (#16).
+        for _ in range(25):
+            record = append_audit_record(
+                self._last, record_input, self._signing_key, sig_kid=self._sig_kid
+            )
+            if self._store.append_audit(record):
+                self._last = record
+                if record.seq % self._checkpoint_interval == 0:
+                    self.checkpoint()
+                return record
+            self._last = self._store.last_audit()
+        raise RuntimeError("audit chain append contention: could not win a seq slot")
 
     def checkpoint(self) -> Checkpoint:
         records = self._store.list_audit()
@@ -199,10 +205,10 @@ class AppContext:
     control_keyset: list[KeyPairJwk] = field(default_factory=list)
     gate_keyset: list[KeyPairJwk] = field(default_factory=list)
     control_verify_jwks: dict[str, dict] = field(default_factory=dict)
-    token_limiter: SlidingWindowLimiter = field(
+    token_limiter: SlidingWindowLimiter | DbRateLimiter = field(
         default_factory=lambda: SlidingWindowLimiter(60, 60.0)
     )
-    gate_limiter: SlidingWindowLimiter = field(
+    gate_limiter: SlidingWindowLimiter | DbRateLimiter = field(
         default_factory=lambda: SlidingWindowLimiter(300, 60.0)
     )
     http: httpx.AsyncClient = field(default_factory=httpx.AsyncClient)
@@ -294,7 +300,10 @@ def create_app_context(
     ``dev_mode=False`` unless ``TOOLGATE_DEV`` is set, so a production boot with
     missing keys refuses to start rather than silently self-provisioning.
     """
-    store = Store(db_path or os.environ.get("TOOLGATE_DB", "toolgate.db"))
+    # A postgres:// DSN activates the multi-instance store; a file path (or
+    # :memory:) keeps single-node SQLite (#16).
+    db_target = db_path or os.environ.get("TOOLGATE_DB", "toolgate.db")
+    store = open_store(db_target)
 
     master = master_key or os.environ.get("TOOLGATE_MASTER_KEY")
     provider_name = os.environ.get("TOOLGATE_VAULT_PROVIDER", "env")
@@ -407,8 +416,18 @@ def create_app_context(
         control_keyset=control_keyset,
         gate_keyset=gate_keyset,
         control_verify_jwks={k.kid: k.public_jwk for k in control_keyset},
-        token_limiter=SlidingWindowLimiter(config.token_rate_limit, config.rate_window_seconds),
-        gate_limiter=SlidingWindowLimiter(config.gate_rate_limit, config.rate_window_seconds),
+        # Postgres deployments share rate-limit state across every instance;
+        # single-node SQLite keeps the in-process sliding window.
+        token_limiter=(
+            DbRateLimiter(store, config.token_rate_limit, config.rate_window_seconds)
+            if isinstance(store, PostgresStore)
+            else SlidingWindowLimiter(config.token_rate_limit, config.rate_window_seconds)
+        ),
+        gate_limiter=(
+            DbRateLimiter(store, config.gate_rate_limit, config.rate_window_seconds)
+            if isinstance(store, PostgresStore)
+            else SlidingWindowLimiter(config.gate_rate_limit, config.rate_window_seconds)
+        ),
         http=http,
     )
     ctx.notifier = Notifier(

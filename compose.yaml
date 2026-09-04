@@ -2,6 +2,12 @@
 #   export TOOLGATE_MASTER_KEY=$(openssl rand -base64 32)
 #   export TOOLGATE_ADMIN_KEY=$(openssl rand -hex 24)
 # then: docker compose up
+#
+# Multi-instance on Postgres (#16):
+#   TOOLGATE_PG_PASSWORD=... TOOLGATE_DB=postgresql://toolgate:$TOOLGATE_PG_PASSWORD@postgres:5432/toolgate \
+#     docker compose --profile postgres up --scale toolgate=2
+# Budgets, one-time proofs, approval claims, and rate limits stay correct
+# across instances — the guarantees move into the database.
 services:
   toolgate:
     build: .
@@ -14,9 +20,22 @@ services:
       TOOLGATE_ADMIN_KEY: ${TOOLGATE_ADMIN_KEY:?set TOOLGATE_ADMIN_KEY}
       TOOLGATE_PUBLIC_URL: ${TOOLGATE_PUBLIC_URL:-http://localhost:8484}
       TOOLGATE_ANCHOR_URL: ${TOOLGATE_ANCHOR_URL:-}
+      TOOLGATE_DB: ${TOOLGATE_DB:-/data/toolgate.db}
     volumes:
       - toolgate-data:/data
     restart: unless-stopped
 
+  postgres:
+    profiles: ["postgres"]
+    image: postgres:16
+    environment:
+      POSTGRES_USER: toolgate
+      POSTGRES_PASSWORD: ${TOOLGATE_PG_PASSWORD:?set TOOLGATE_PG_PASSWORD for the postgres profile}
+      POSTGRES_DB: toolgate
+    volumes:
+      - toolgate-pg:/var/lib/postgresql/data
+    restart: unless-stopped
+
 volumes:
   toolgate-data:
+  toolgate-pg:

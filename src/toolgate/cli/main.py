@@ -217,6 +217,33 @@ def server() -> None:
 
 
 @app.command()
+def migrate(
+    from_path: Annotated[
+        str, typer.Option("--from", help="Source SQLite database file.")
+    ],
+    to_dsn: Annotated[
+        str, typer.Option("--to", help="Target postgres:// DSN.")
+    ],
+) -> None:
+    """Copy a SQLite store into Postgres verbatim and re-verify the audit chain."""
+    from toolgate.server.store_pg import is_postgres_dsn, migrate_sqlite_to_postgres
+
+    if not is_postgres_dsn(to_dsn):
+        err_console.print("[bold red]--to must be a postgres:// DSN[/]")
+        raise typer.Exit(1)
+    result = migrate_sqlite_to_postgres(from_path, to_dsn)
+    ok = result["valid"]
+    emit(
+        result,
+        f"[{'green' if ok else 'red'}]migrated[/] {result['records']} audit records "
+        f"(+{sum(result['tables'].values()) - result['records']} rows across "
+        f"{len(result['tables'])} tables) · chain on target: "
+        f"{'VALID' if ok else 'BROKEN'} · length {result['length']}",
+    )
+    raise typer.Exit(0 if ok else 2)
+
+
+@app.command()
 def demo(
     live: bool = typer.Option(
         False,
