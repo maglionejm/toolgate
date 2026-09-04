@@ -34,6 +34,7 @@ from .shared import (
     token_app,
     upstreams_app,
     users_app,
+    vault_app,
 )
 
 app = typer.Typer(no_args_is_help=True, help="Toolgate — capability control plane for AI agents.")
@@ -53,6 +54,7 @@ for name, sub in [
     ("operators", operators_app),
     ("channels", channels_app),
     ("slack", slack_app),
+    ("vault", vault_app),
 ]:
     app.add_typer(sub, name=name)
 

@@ -71,7 +71,9 @@ Store exports on WORM/object-lock storage. External Merkle anchoring is tracked 
 | --- | --- |
 | Admin key | Set new `TOOLGATE_ADMIN_KEY`, restart. Old key dies at boot. |
 | Upstream secret | Re-POST the upstream with the new secret (re-seals; same name keeps policies valid). |
-| Vault master key | **Requires re-sealing every secret** — planned as part of KMS envelope work (#8). Until then treat as fixed. |
+| Vault KEK (KMS providers) | Rotate the key in the KMS (or point `TOOLGATE_KMS_KEY` at a new key and restart), then `toolgate vault rotate-kek` — re-wraps every data key; **no secret payload is ever decrypted**. Old KEK versions keep unwrapping during the window (KMS decrypt APIs resolve them). Audited. |
+| Vault KEK (`env` provider) | Set the new `TOOLGATE_MASTER_KEY`, put the old one in `TOOLGATE_MASTER_KEY_PREVIOUS`, restart, run `toolgate vault rotate-kek`, then drop the previous key. |
+| Legacy v1 blobs | `toolgate vault migrate` bulk-converts to v2 envelopes; `toolgate vault status` shows the v1/v2 split. |
 | Control-plane / gate signing keys | `toolgate keys rotate control|gate` — kid-overlap keysets; gate rotation writes a signed handoff record so offline verification follows the lineage. Old tokens stay valid through their TTL. |
 | Agent keys | Agent-side; register the new public key as a **new agent** and re-grant. |
 

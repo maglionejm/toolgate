@@ -606,6 +606,61 @@ def control_router(ctx: AppContext) -> APIRouter:
         _ops_audit(request, "channels.delete", {"id": channel_id}, channel.tenantId)
         return {"id": channel_id, "deleted": True}
 
+    # -- vault lifecycle (#8) ----------------------------------------------------------
+
+    @router.get("/vault/status", dependencies=auditor_dep)
+    async def vault_status() -> dict[str, Any]:
+        refs = ctx.store.list_secret_refs()
+        v1 = sum(1 for r in refs if (s := ctx.store.get_secret(r)) and s.v < 2)
+        return {
+            "kekId": ctx.vault.kek_id,
+            "secrets": len(refs),
+            "v1Blobs": v1,
+            "v2Blobs": len(refs) - v1,
+        }
+
+    @router.post("/vault/rotate-kek", dependencies=owner_dep)
+    async def vault_rotate_kek(request: Request) -> dict[str, Any]:
+        """Re-wrap every stored DEK under the current KEK. Secret payloads are
+        never decrypted; v1 blobs are skipped (migrate them first)."""
+        rotated, skipped_v1 = 0, 0
+        for ref in ctx.store.list_secret_refs():
+            sealed = ctx.store.get_secret(ref)
+            if sealed is None:
+                continue
+            if sealed.v < 2:
+                skipped_v1 += 1
+                continue
+            ctx.store.put_secret(ref, ctx.vault.rewrap(sealed))
+            rotated += 1
+        _ops_audit(
+            request,
+            "vault.rotate-kek",
+            {"rotated": rotated, "skippedV1": skipped_v1, "kekId": ctx.vault.kek_id},
+        )
+        return {"rotated": rotated, "skippedV1": skipped_v1, "kekId": ctx.vault.kek_id}
+
+    @router.post("/vault/migrate", dependencies=owner_dep)
+    async def vault_migrate(request: Request) -> dict[str, Any]:
+        """Bulk-convert legacy v1 (master-key) blobs to v2 envelopes under the
+        configured provider."""
+        migrated, failures = 0, []
+        for ref in ctx.store.list_secret_refs():
+            sealed = ctx.store.get_secret(ref)
+            if sealed is None or sealed.v >= 2:
+                continue
+            try:
+                ctx.store.put_secret(ref, ctx.vault.reseal(sealed))
+                migrated += 1
+            except Exception:  # noqa: BLE001 - report, don't abort the batch
+                failures.append(ref)
+        _ops_audit(
+            request,
+            "vault.migrate",
+            {"migrated": migrated, "failures": len(failures), "kekId": ctx.vault.kek_id},
+        )
+        return {"migrated": migrated, "failures": failures, "kekId": ctx.vault.kek_id}
+
     @router.post("/slack-bindings", status_code=201, dependencies=owner_dep)
     async def create_slack_binding(
         body: CreateSlackBinding, request: Request

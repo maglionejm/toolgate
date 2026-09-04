@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from .shared import _table, channels_app, client, emit, slack_app
+from .shared import _table, channels_app, client, emit, slack_app, vault_app
 
 
 @channels_app.command("list")
@@ -145,3 +145,37 @@ def slack_bindings(tenant: Annotated[str, typer.Option("--tenant", "-t")]) -> No
     data = client().get("/v1/control/slack-bindings", tenantId=tenant)
     rows = [[b["slackUserId"], b["operatorId"], b["createdAt"][:19]] for b in data]
     emit(data, _table("slack bindings", ["slack user", "operator", "created"], rows))
+
+
+@vault_app.command("status")
+def vault_status() -> None:
+    data = client().get("/v1/control/vault/status")
+    emit(
+        data,
+        f"kek [bold]{data['kekId']}[/] · {data['secrets']} secrets · "
+        f"{data['v2Blobs']} v2 · {data['v1Blobs']} v1 (legacy)",
+    )
+
+
+@vault_app.command("rotate-kek")
+def vault_rotate_kek() -> None:
+    """Re-wrap every data key under the current KEK (no payload is decrypted)."""
+    data = client().post("/v1/control/vault/rotate-kek")
+    emit(
+        data,
+        f"[green]rotated[/] {data['rotated']} data keys to kek {data['kekId']}"
+        + (f" · {data['skippedV1']} v1 blobs skipped — run `toolgate vault migrate`"
+           if data["skippedV1"] else ""),
+    )
+
+
+@vault_app.command("migrate")
+def vault_migrate() -> None:
+    """Bulk-convert legacy v1 (master-key) blobs to v2 envelopes."""
+    data = client().post("/v1/control/vault/migrate")
+    failures = data["failures"]
+    emit(
+        data,
+        f"[green]migrated[/] {data['migrated']} secrets to v2 (kek {data['kekId']})"
+        + (f" · [red]{len(failures)} failures[/]: {', '.join(failures)}" if failures else ""),
+    )

@@ -48,8 +48,8 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 | Key | Purpose | Storage (MVP) | Production path |
 | --- | --- | --- | --- |
 | Control-plane Ed25519 | Signs capability tokens | SQLite `settings` (JWK) | KMS/HSM; rotation with overlapping `kid`s |
-| Gate Ed25519 | Signs audit records | SQLite `settings` | KMS; periodic Merkle checkpoints anchored externally (issue #12) |
-| Vault master key | Seals upstream secrets | `TOOLGATE_MASTER_KEY` env; dev fallback stored alongside data **with a loud warning** | KMS envelope encryption (issue #8) |
+| Gate Ed25519 | Signs audit records | SQLite `settings` | KMS; Merkle checkpoints anchored in a transparency log with stored inclusion proofs (0.5) |
+| Vault KEK | Wraps per-secret data keys | `env` provider: derived from `TOOLGATE_MASTER_KEY` (dev fallback stored alongside data **with a loud warning**) | `gcp-kms` / `aws-kms` providers: KEK never leaves the KMS; fail-closed boot; `toolgate vault rotate-kek` re-wraps without decrypting payloads (0.5) |
 | Agent private keys | Client assertions + proofs | Never seen by Toolgate | Agent-side responsibility; recommend OS keychain / secure element |
 
 ## The hand-rolled PoP layer
@@ -73,7 +73,7 @@ Decisions can arrive from outside the console; each channel authenticates differ
 - **Operator auth**: per-operator keys, not passkeys/OIDC; no MFA yet (ADR 0006 follow-up).
 - **MCP surface** trades PoP sender-binding for ecosystem compatibility (ADR 0009); set `mcp_enabled=False` to refuse it.
 - **Tenant isolation** relies on application-level filters over a shared SQLite file; no per-tenant encryption.
-- **Vault** master key is env-based; KMS envelope encryption pending (#8).
+- **Vault** supports KMS envelope encryption (gcp-kms/aws-kms; per-secret DEKs, KEK never leaves the KMS, fail-closed boot). The `env` provider remains available for dev and requires an explicit override in production.
 - **Anchoring** verifies against a Rekor-*compatible* log (hashedrekord submission, RFC 6962 inclusion proofs, pinned log key); an adapter for production Rekor's exact SET/checkpoint-note format is follow-up work.
 - **Taint** is binary and per-txn; field-level dataflow is future work (ADR 0008).
 

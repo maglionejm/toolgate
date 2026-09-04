@@ -35,6 +35,7 @@ __all__ = [
     "token_app",
     "upstreams_app",
     "users_app",
+    "vault_app",
 ]
 
 console = Console()
@@ -56,6 +57,7 @@ channels_app = typer.Typer(
     no_args_is_help=True, help="Approval notification channels (webhook, Slack, email)."
 )
 slack_app = typer.Typer(no_args_is_help=True, help="Slack user <-> operator bindings.")
+vault_app = typer.Typer(no_args_is_help=True, help="Secret vault lifecycle (KEK, migration).")
 
 
 def client() -> AdminClient:
