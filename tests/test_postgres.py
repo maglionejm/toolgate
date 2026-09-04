@@ -31,7 +31,7 @@ pytestmark = pytest.mark.skipif(not DSN, reason="TOOLGATE_TEST_PG_DSN not set")
 _TABLES = (
     "settings", "entities", "grant_budgets", "used_jtis", "secrets", "audit",
     "checkpoints", "txn_taint", "auth_failures", "deliveries", "link_tokens",
-    "rate_windows",
+    "oauth_states", "rate_windows",
 )
 
 

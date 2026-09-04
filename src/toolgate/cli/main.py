@@ -26,6 +26,7 @@ from .shared import (
     emit,
     grants_app,
     keys_app,
+    oauth_app,
     operators_app,
     policies_app,
     slack_app,
@@ -55,6 +56,7 @@ for name, sub in [
     ("channels", channels_app),
     ("slack", slack_app),
     ("vault", vault_app),
+    ("oauth", oauth_app),
 ]:
     app.add_typer(sub, name=name)
 

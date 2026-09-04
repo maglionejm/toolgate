@@ -13,7 +13,17 @@ from urllib.parse import parse_qs
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from toolgate.core import ToolgateError, hash_args
+from toolgate.core import (
+    AuditAction,
+    AuditActor,
+    AuditDecision,
+    AuditRecordInput,
+    AuditResult,
+    Connection,
+    ToolgateError,
+    hash_args,
+    new_id,
+)
 
 from .approvals import decide_approval
 from .context import AppContext
@@ -133,6 +143,28 @@ def hooks_router(ctx: AppContext) -> APIRouter:
             f"({approval.upstream}.{approval.tool}) — decided by {operator.name}."
         )
 
+    # -- OAuth connection callback (#11) --------------------------------------------
+
+    @router.get("/connections/callback", response_class=HTMLResponse)
+    async def connections_callback(
+        state: str = "", code: str = "", error: str = ""
+    ) -> HTMLResponse:
+        if error:
+            return _page(f"The provider reported an error: {error}. Nothing was connected.", 400)
+        if not state or not code:
+            return _page("Missing state or code.", 400)
+        assert ctx.broker is not None
+        try:
+            connection = await ctx.broker.complete(state, code)
+        except ToolgateError as err:
+            return _page(f"Could not complete the connection: {err.message}", 400)
+        _connection_audit(ctx, connection)
+        return _page(
+            f"Connected. User {connection.userId} is now linked to provider app "
+            f"{connection.providerAppId}; agents acting for this user can call the "
+            f"gated tools. You can close this window."
+        )
+
     def _verify_against_tenant_channels(
         ctx_: AppContext, tenant_id: str, request: Request, raw: bytes
     ) -> bool:
@@ -150,6 +182,35 @@ def hooks_router(ctx: AppContext) -> APIRouter:
         return False
 
     return router
+
+
+def _connection_audit(ctx: AppContext, connection: Connection) -> None:
+    """Connection establishment lands in the signed chain like every other
+    lifecycle event; the token material itself never does."""
+    ctx.audit.record(
+        AuditRecordInput(
+            id=new_id("evt"),
+            tenantId=connection.tenantId,
+            ts=datetime.now(UTC).isoformat(),
+            actor=AuditActor(
+                agentId="control-plane", userId=connection.userId, grantId="-", tokenJti="-"
+            ),
+            action=AuditAction(
+                callId=new_id("call"),
+                upstream="control",
+                tool="connections.connect",
+                argsHash=hash_args(
+                    {"id": connection.id, "providerAppId": connection.providerAppId}
+                ),
+            ),
+            decision=AuditDecision(
+                effect="allow",
+                source="operator",
+                reason=f"oauth connection completed by user {connection.userId}",
+            ),
+            result=AuditResult(status="executed"),
+        )
+    )
 
 
 def _parse_slack_payload(raw: bytes) -> dict[str, Any] | None:

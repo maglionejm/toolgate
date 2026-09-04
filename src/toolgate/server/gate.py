@@ -429,21 +429,49 @@ async def _execute_call(
             {"costUnits": tool_def.costUnits},
         )
 
-    sealed = ctx.store.get_secret(upstream.credential.secretRef)
-    if not sealed:
-        raise ToolgateError(ErrorCodes.INTERNAL, "upstream credential missing from vault")
-    secret = ctx.vault.open(sealed)
-
     url = f"{upstream.baseUrl.rstrip('/')}/tools/{tool}"
     headers: dict[str, str] = {"content-type": "application/json"}
     params: dict[str, str] = {}
     cred = upstream.credential
-    if cred.mode == "bearer":
+    if cred.mode == "oauth_user":
+        # Per-user credential (#11): the call runs with the connection of the
+        # human the grant delegates for — resolved and refreshed server-side.
+        connection = ctx.store.find_connection(
+            grant.tenantId, cred.providerAppId, grant.userId
+        )
+        if connection is None or connection.status != "active":
+            audit(
+                AuditResult(status="denied"),
+                AuditDecision(
+                    effect="deny",
+                    source="default",
+                    reason=f"no active connection for user {grant.userId}",
+                ),
+            )
+            raise ToolgateError(
+                ErrorCodes.CONNECTION_REQUIRED,
+                f"user {grant.userId} has no active connection for this upstream — "
+                "an operator can start one via POST /v1/control/connections/start",
+                {"providerAppId": cred.providerAppId, "userId": grant.userId},
+            )
+        assert ctx.broker is not None
+        try:
+            secret = await ctx.broker.access_token(connection)
+        except ToolgateError:
+            audit(AuditResult(status="error"))
+            raise
         headers["authorization"] = f"Bearer {secret}"
-    elif cred.mode == "header":
-        headers[cred.headerName.lower()] = secret
     else:
-        params[cred.paramName] = secret
+        sealed = ctx.store.get_secret(cred.secretRef)
+        if not sealed:
+            raise ToolgateError(ErrorCodes.INTERNAL, "upstream credential missing from vault")
+        secret = ctx.vault.open(sealed)
+        if cred.mode == "bearer":
+            headers["authorization"] = f"Bearer {secret}"
+        elif cred.mode == "header":
+            headers[cred.headerName.lower()] = secret
+        else:
+            params[cred.paramName] = secret
 
     started = time.monotonic()
     try:

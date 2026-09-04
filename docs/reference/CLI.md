@@ -76,6 +76,19 @@ toolgate slack bindings -t tnt_...
 
 Parked approvals fan out to every active channel; decisions from Slack or email carry the bound operator's attribution in the audit chain, exactly like console decisions.
 
+## OAuth connections (0.5)
+
+```bash
+toolgate oauth add-app -t tnt_... --name github --client-id ... \
+    --authorize-url ... --token-url ... --scope repo      # prompts for the client secret
+toolgate oauth apps -t tnt_...
+toolgate oauth connect -t tnt_... --user usr_... --app oap_...   # prints the authorize URL
+toolgate oauth connections -t tnt_... [--user usr_...]
+toolgate oauth revoke con:...                                     # instant; sealed tokens deleted
+```
+
+Upstreams declare `--mode oauth_user` semantics via the API (`credential: {mode: "oauth_user", providerAppId}`); the gate injects the calling user's live token and refreshes it transparently.
+
 ## Audit
 
 ```bash

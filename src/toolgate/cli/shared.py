@@ -27,6 +27,7 @@ __all__ = [
     "escape",
     "grants_app",
     "keys_app",
+    "oauth_app",
     "operators_app",
     "policies_app",
     "slack_app",
@@ -58,6 +59,9 @@ channels_app = typer.Typer(
 )
 slack_app = typer.Typer(no_args_is_help=True, help="Slack user <-> operator bindings.")
 vault_app = typer.Typer(no_args_is_help=True, help="Secret vault lifecycle (KEK, migration).")
+oauth_app = typer.Typer(
+    no_args_is_help=True, help="Per-user OAuth connections (provider apps, connect, revoke)."
+)
 
 
 def client() -> AdminClient:

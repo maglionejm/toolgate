@@ -8,7 +8,7 @@ from typing import Annotated
 
 import typer
 
-from .shared import _table, channels_app, client, emit, slack_app, vault_app
+from .shared import _table, channels_app, client, emit, oauth_app, slack_app, vault_app
 
 
 @channels_app.command("list")
@@ -167,6 +167,81 @@ def vault_rotate_kek() -> None:
         + (f" · {data['skippedV1']} v1 blobs skipped — run `toolgate vault migrate`"
            if data["skippedV1"] else ""),
     )
+
+
+@oauth_app.command("add-app")
+def oauth_add_app(
+    tenant: Annotated[str, typer.Option("--tenant", "-t")],
+    name: Annotated[str, typer.Option("--name", help="Provider name, e.g. github.")],
+    client_id: Annotated[str, typer.Option("--client-id")],
+    authorize_url: Annotated[str, typer.Option("--authorize-url")],
+    token_url: Annotated[str, typer.Option("--token-url")],
+    client_secret: Annotated[
+        str, typer.Option("--client-secret", prompt=True, hide_input=True)
+    ],
+    scope: Annotated[list[str] | None, typer.Option("--scope", help="Repeatable.")] = None,
+) -> None:
+    data = client().post(
+        "/v1/control/provider-apps",
+        {
+            "tenantId": tenant,
+            "name": name,
+            "clientId": client_id,
+            "clientSecret": client_secret,
+            "authorizeUrl": authorize_url,
+            "tokenUrl": token_url,
+            "scopes": scope or [],
+        },
+    )
+    emit(
+        data,
+        f"[green]provider app registered[/] {data['id']} ({name})\n"
+        f"set the provider's redirect URI to <public-url>/v1/connections/callback",
+    )
+
+
+@oauth_app.command("apps")
+def oauth_apps(tenant: Annotated[str, typer.Option("--tenant", "-t")]) -> None:
+    data = client().get("/v1/control/provider-apps", tenantId=tenant)
+    rows = [[a["id"], a["name"], a["clientId"], " ".join(a["scopes"])] for a in data]
+    emit(data, _table("provider apps", ["id", "name", "client id", "scopes"], rows))
+
+
+@oauth_app.command("connect")
+def oauth_connect(
+    tenant: Annotated[str, typer.Option("--tenant", "-t")],
+    user: Annotated[str, typer.Option("--user")],
+    app: Annotated[str, typer.Option("--app", help="Provider app id (oap_…).")],
+) -> None:
+    """Start a connection: send the printed URL to the user to authorize."""
+    data = client().post(
+        "/v1/control/connections/start",
+        {"tenantId": tenant, "userId": user, "providerAppId": app},
+    )
+    emit(
+        data,
+        f"[green]authorization started[/] — have the user open:\n{data['authorizeUrl']}",
+    )
+
+
+@oauth_app.command("connections")
+def oauth_connections(
+    tenant: Annotated[str, typer.Option("--tenant", "-t")],
+    user: Annotated[str | None, typer.Option("--user")] = None,
+) -> None:
+    data = client().get("/v1/control/connections", tenantId=tenant, userId=user)
+    rows = [
+        [c["id"], c["userId"], c["providerAppId"], c["status"], c["expiresAt"][:19]]
+        for c in data
+    ]
+    emit(data, _table("connections", ["id", "user", "app", "status", "token expires"], rows))
+
+
+@oauth_app.command("revoke")
+def oauth_revoke(connection_id: str) -> None:
+    """Instantly revoke a connection; sealed tokens are deleted."""
+    data = client().post(f"/v1/control/connections/{connection_id}/revoke")
+    emit(data, f"[yellow]revoked[/] {connection_id} — sealed tokens deleted")
 
 
 @vault_app.command("migrate")

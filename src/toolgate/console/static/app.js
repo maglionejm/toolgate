@@ -80,6 +80,7 @@ async function render() {
   else if (view === "simulator") await loadPolicies();
   else if (view === "reports") await renderReports();
   else if (view === "channels") await renderChannels();
+  else if (view === "connections") await renderConnections();
 }
 
 /* ---------- approvals inbox ---------- */
@@ -246,6 +247,48 @@ $("channels-table").addEventListener("click", async (e) => {
   if (!confirm(`Delete channel ${btn.dataset.channel}?`)) return;
   await api(`/v1/control/channels/${btn.dataset.channel}`, undefined, "DELETE");
   await renderChannels();
+});
+
+/* ---------- oauth connections ---------- */
+
+async function renderConnections() {
+  const [apps, connections] = await Promise.all([
+    api(`/v1/control/provider-apps?tenantId=${tenantId()}`),
+    api(`/v1/control/connections?tenantId=${tenantId()}`),
+  ]);
+  $("conn-app").innerHTML = apps
+    .map((a) => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.id)})</option>`)
+    .join("") || `<option value="">no provider apps — toolgate oauth add-app</option>`;
+  $("connections-table").querySelector("tbody").innerHTML = connections
+    .map(
+      (c) => `<tr>
+        <td>${esc(c.id)}</td><td>${esc(c.userId)}</td><td>${esc(c.providerAppId)}</td>
+        <td class="${c.status === "active" ? "fx-allow" : "fx-deny"}">${esc(c.status)}</td>
+        <td>${esc(c.expiresAt.slice(0, 19))}</td>
+        <td>${c.status === "active" ? `<button class="btn btn-deny btn-sm" data-conn="${esc(c.id)}">revoke</button>` : ""}</td>
+      </tr>`
+    )
+    .join("") || `<tr><td colspan="6" class="empty">no connections yet</td></tr>`;
+}
+
+$("conn-start").addEventListener("click", async () => {
+  const app = $("conn-app").value;
+  const user = $("conn-user").value.trim();
+  if (!app || !user) return;
+  const out = await api("/v1/control/connections/start", {
+    tenantId: tenantId(), userId: user, providerAppId: app,
+  });
+  const url = $("conn-url");
+  url.hidden = false;
+  url.innerHTML = `send the user here to authorize: <a href="${esc(out.authorizeUrl)}" target="_blank" rel="noopener">${esc(out.authorizeUrl)}</a>`;
+});
+
+$("connections-table").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-conn]");
+  if (!btn) return;
+  if (!confirm(`Revoke ${btn.dataset.conn}? Sealed tokens are deleted immediately.`)) return;
+  await api(`/v1/control/connections/${btn.dataset.conn}/revoke`, {});
+  await renderConnections();
 });
 
 /* ---------- simulator ---------- */

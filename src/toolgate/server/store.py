@@ -14,11 +14,13 @@ from toolgate.core import (
     AuditRecord,
     Budget,
     Checkpoint,
+    Connection,
     DelegationGrant,
     Delivery,
     NotificationChannel,
     Operator,
     Policy,
+    ProviderApp,
     SlackBinding,
     Tenant,
     Upstream,
@@ -85,6 +87,11 @@ CREATE INDEX IF NOT EXISTS idx_deliveries_due ON deliveries(status, next_attempt
 CREATE INDEX IF NOT EXISTS idx_deliveries_approval ON deliveries(approval_id);
 CREATE TABLE IF NOT EXISTS link_tokens (
     token_hash TEXT PRIMARY KEY,
+    json TEXT NOT NULL,
+    consumed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state_hash TEXT PRIMARY KEY,
     json TEXT NOT NULL,
     consumed_at TEXT
 );
@@ -407,6 +414,61 @@ class Store:
         if cursor.rowcount != 1:
             return "used", None
         return "ok", json.loads(row[0])
+
+    # -- OAuth brokering (#11) ----------------------------------------------------------
+
+    def put_provider_app(self, app: ProviderApp) -> None:
+        self._put("provider_app", app.id, app.tenantId, app.model_dump(mode="json"))
+
+    def get_provider_app(self, app_id: str) -> ProviderApp | None:
+        return self._get_model("provider_app", app_id, ProviderApp)
+
+    def list_provider_apps(self, tenant_id: str) -> list[ProviderApp]:
+        return [ProviderApp.model_validate(d) for d in self._list("provider_app", tenant_id)]
+
+    @staticmethod
+    def connection_id(tenant_id: str, provider_app_id: str, user_id: str) -> str:
+        # Deterministic id: one connection per {tenant, app, user}; reconnecting
+        # replaces it, and gate-time lookup is a primary-key read.
+        return f"con:{tenant_id}:{provider_app_id}:{user_id}"
+
+    def put_connection(self, c: Connection) -> None:
+        self._put("connection", c.id, c.tenantId, c.model_dump(mode="json", exclude_none=True))
+
+    def get_connection(self, connection_id: str) -> Connection | None:
+        return self._get_model("connection", connection_id, Connection)
+
+    def find_connection(
+        self, tenant_id: str, provider_app_id: str, user_id: str
+    ) -> Connection | None:
+        return self.get_connection(self.connection_id(tenant_id, provider_app_id, user_id))
+
+    def list_connections(self, tenant_id: str, user_id: str | None = None) -> list[Connection]:
+        connections = [Connection.model_validate(d) for d in self._list("connection", tenant_id)]
+        return [c for c in connections if user_id is None or c.userId == user_id]
+
+    def put_oauth_state(self, state_hash: str, doc: dict[str, Any]) -> None:
+        self.db.execute(
+            "INSERT INTO oauth_states (state_hash, json, consumed_at) VALUES (?, ?, NULL)",
+            (state_hash, json.dumps(doc)),
+        )
+
+    def consume_oauth_state(self, state_hash: str) -> dict[str, Any] | None:
+        """Single-use: the first caller gets the state doc, everyone else None."""
+        row = self.db.execute(
+            "SELECT json, consumed_at FROM oauth_states WHERE state_hash = ?", (state_hash,)
+        ).fetchone()
+        if row is None or row[1] is not None:
+            return None
+        cursor = self.db.execute(
+            "UPDATE oauth_states SET consumed_at = ? WHERE state_hash = ? "
+            "AND consumed_at IS NULL",
+            (datetime.now(UTC).isoformat(), state_hash),
+        )
+        return json.loads(row[0]) if cursor.rowcount == 1 else None
+
+    def delete_secret(self, ref: str) -> None:
+        self.db.execute("DELETE FROM secrets WHERE ref = ?", (ref,))
 
     # -- auth failure backoff ----------------------------------------------------------
 

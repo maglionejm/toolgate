@@ -113,7 +113,23 @@ Filesystem exports are write-once (`O_EXCL`, mode 0444) with a SHA-256 manifest 
 
 The legacy `TOOLGATE_ANCHOR_URL` webhook witness still works and can run alongside Rekor anchoring.
 
-## R8 — Operator lifecycle
+## R8 — Per-user OAuth connections
+
+```bash
+toolgate oauth add-app -t tnt_... --name github --client-id ... \
+    --authorize-url https://github.com/login/oauth/authorize \
+    --token-url https://github.com/login/oauth/access_token --scope repo
+# provider redirect URI must be <public-url>/v1/connections/callback (exact match)
+toolgate oauth connect -t tnt_... --user usr_... --app oap_...   # prints the authorize URL
+toolgate oauth connections -t tnt_...                            # status + token expiry
+toolgate oauth revoke con:tnt_...:oap_...:usr_...                # instant; sealed tokens deleted
+```
+
+- `TG_CONNECTION_REQUIRED` on a gate call means the grant's user never connected (or was revoked): start a connection, no server change needed.
+- Scope growth requires re-consent: update the provider app's scopes, then re-run connect for each user (reconnecting replaces the connection in place).
+- Every lifecycle event (start/connect/revoke) lands in the signed audit chain; token material never does.
+
+## R9 — Operator lifecycle
 
 - Create per-person operators (`toolgate operators create --name ... --role auditor|approver|owner`); the `opk_` key is shown once.
 - Offboarding: `toolgate operators disable op_...` — immediate.
