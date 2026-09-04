@@ -16,6 +16,10 @@ class ErrorCodes:
     VALIDATION = "TG_VALIDATION"
     UPSTREAM_ERROR = "TG_UPSTREAM_ERROR"
     INTERNAL = "TG_INTERNAL"
+    # OAuth brokering (#11): the grant's user has no active connection for the
+    # upstream's provider / the broker could not obtain a live token.
+    CONNECTION_REQUIRED = "TG_CONNECTION_REQUIRED"
+    CONNECTION_FAILED = "TG_CONNECTION_FAILED"
 
 
 _HTTP_STATUS: dict[str, int] = {
@@ -33,6 +37,8 @@ _HTTP_STATUS: dict[str, int] = {
     ErrorCodes.VALIDATION: 400,
     ErrorCodes.UPSTREAM_ERROR: 502,
     ErrorCodes.INTERNAL: 500,
+    ErrorCodes.CONNECTION_REQUIRED: 403,
+    ErrorCodes.CONNECTION_FAILED: 502,
 }
 
 

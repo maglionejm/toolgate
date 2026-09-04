@@ -28,6 +28,7 @@ from toolgate.core import (
     Operator,
     Policy,
     PolicyRule,
+    ProviderApp,
     SlackBinding,
     SlackChannelConfig,
     Tenant,
@@ -113,10 +114,13 @@ class CreateAgent(BaseModel):
 
 
 class CredentialInput(BaseModel):
-    mode: Literal["bearer", "header", "query"]
-    secret: str = Field(min_length=1)
+    mode: Literal["bearer", "header", "query", "oauth_user"]
+    # Static modes seal this into the vault; oauth_user has no tenant-wide
+    # secret — tokens are resolved per user at call time (#11).
+    secret: str | None = None
     headerName: str | None = None
     paramName: str | None = None
+    providerAppId: str | None = None
 
 
 class CreateUpstream(BaseModel):
@@ -201,6 +205,22 @@ class CreateSlackBinding(BaseModel):
     tenantId: str
     slackUserId: str = Field(min_length=1)
     operatorId: str = Field(min_length=1)
+
+
+class CreateProviderApp(BaseModel):
+    tenantId: str
+    name: str = Field(min_length=1)
+    clientId: str = Field(min_length=1)
+    clientSecret: str = Field(min_length=1)
+    authorizeUrl: str = Field(min_length=1)
+    tokenUrl: str = Field(min_length=1)
+    scopes: list[str] = Field(default_factory=list)
+
+
+class StartConnection(BaseModel):
+    tenantId: str
+    userId: str = Field(min_length=1)
+    providerAppId: str = Field(min_length=1)
 
 
 class TokenRequest(BaseModel):
@@ -374,14 +394,27 @@ def control_router(ctx: AppContext) -> APIRouter:
             raise ToolgateError(ErrorCodes.VALIDATION, "paramName required for query mode")
 
         upstream_id = new_id("ups")
-        secret_ref = f"sec_{upstream_id}"
-        ctx.store.put_secret(secret_ref, ctx.vault.seal(cred.secret))
-
-        injection: dict[str, Any] = {"mode": cred.mode, "secretRef": secret_ref}
-        if cred.mode == "header":
-            injection["headerName"] = cred.headerName
-        if cred.mode == "query":
-            injection["paramName"] = cred.paramName
+        if cred.mode == "oauth_user":
+            if not cred.providerAppId:
+                raise ToolgateError(
+                    ErrorCodes.VALIDATION, "providerAppId required for oauth_user mode"
+                )
+            app = ctx.store.get_provider_app(cred.providerAppId)
+            if app is None or app.tenantId != body.tenantId:
+                raise ToolgateError(
+                    ErrorCodes.VALIDATION, f"provider app not found: {cred.providerAppId}"
+                )
+            injection: dict[str, Any] = {"mode": "oauth_user", "providerAppId": app.id}
+        else:
+            if not cred.secret:
+                raise ToolgateError(ErrorCodes.VALIDATION, "secret required for static modes")
+            secret_ref = f"sec_{upstream_id}"
+            ctx.store.put_secret(secret_ref, ctx.vault.seal(cred.secret))
+            injection = {"mode": cred.mode, "secretRef": secret_ref}
+            if cred.mode == "header":
+                injection["headerName"] = cred.headerName
+            if cred.mode == "query":
+                injection["paramName"] = cred.paramName
 
         upstream = Upstream(
             id=upstream_id,
@@ -605,6 +638,82 @@ def control_router(ctx: AppContext) -> APIRouter:
         ctx.store.delete_channel(channel_id)
         _ops_audit(request, "channels.delete", {"id": channel_id}, channel.tenantId)
         return {"id": channel_id, "deleted": True}
+
+    # -- OAuth brokering (#11) ---------------------------------------------------------
+
+    @router.post("/provider-apps", status_code=201, dependencies=owner_dep)
+    async def create_provider_app(body: CreateProviderApp, request: Request) -> dict[str, Any]:
+        _require_tenant(ctx, body.tenantId)
+        from .broker import new_provider_app_id
+
+        app_id = new_provider_app_id()
+        secret_ref = f"sec_{app_id}_client"
+        ctx.store.put_secret(secret_ref, ctx.vault.seal(body.clientSecret))
+        app = ProviderApp(
+            id=app_id,
+            tenantId=body.tenantId,
+            name=body.name,
+            clientId=body.clientId,
+            clientSecretRef=secret_ref,
+            authorizeUrl=body.authorizeUrl,
+            tokenUrl=body.tokenUrl,
+            scopes=body.scopes,
+            createdAt=_now(),
+        )
+        ctx.store.put_provider_app(app)
+        _ops_audit(
+            request, "provider-apps.create", {"id": app.id, "name": body.name}, body.tenantId
+        )
+        return app.model_dump(mode="json")
+
+    @router.get("/provider-apps", dependencies=auditor_dep)
+    async def list_provider_apps(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
+        # Secrets never leave the vault; the sealed ref is all that shows.
+        return [a.model_dump(mode="json") for a in ctx.store.list_provider_apps(tenantId)]
+
+    @router.post("/connections/start", dependencies=approver_dep)
+    async def start_connection(body: StartConnection, request: Request) -> dict[str, str]:
+        _require_tenant(ctx, body.tenantId)
+        if not ctx.store.get_user(body.userId):
+            raise _not_found("user", body.userId)
+        app = ctx.store.get_provider_app(body.providerAppId)
+        if app is None or app.tenantId != body.tenantId:
+            raise _not_found("provider app", body.providerAppId)
+        assert ctx.broker is not None
+        started = ctx.broker.start(app, body.tenantId, body.userId)
+        _ops_audit(
+            request,
+            "connections.start",
+            {"userId": body.userId, "providerAppId": app.id},
+            body.tenantId,
+        )
+        return {"authorizeUrl": started["authorizeUrl"], "redirectUri": ctx.broker.redirect_uri}
+
+    @router.get("/connections", dependencies=auditor_dep)
+    async def list_connections(
+        tenantId: Annotated[str, Query()],
+        userId: Annotated[str | None, Query()] = None,
+    ) -> list[dict[str, Any]]:
+        # Metadata only: token refs stay server-side.
+        return [
+            c.model_dump(mode="json", exclude={"accessTokenRef", "refreshTokenRef"})
+            for c in ctx.store.list_connections(tenantId, userId)
+        ]
+
+    @router.post("/connections/{connection_id}/revoke", dependencies=approver_dep)
+    async def revoke_connection(connection_id: str, request: Request) -> dict[str, Any]:
+        connection = ctx.store.get_connection(connection_id)
+        if connection is None:
+            raise _not_found("connection", connection_id)
+        assert ctx.broker is not None
+        ctx.broker.revoke(connection)
+        _ops_audit(
+            request,
+            "connections.revoke",
+            {"id": connection.id, "userId": connection.userId},
+            connection.tenantId,
+        )
+        return {"id": connection.id, "status": "revoked", "tokensDeleted": True}
 
     # -- vault lifecycle (#8) ----------------------------------------------------------
 

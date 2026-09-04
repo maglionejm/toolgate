@@ -31,6 +31,7 @@ from toolgate.core import (
 )
 
 from .anchor import AnchorWorker, RekorSink
+from .broker import OAuthBroker
 from .notifier import Notifier
 from .ratelimit import DbRateLimiter, SlidingWindowLimiter
 from .store import Store
@@ -221,6 +222,8 @@ class AppContext:
     notifier: Notifier | None = None
     # Transparency-log anchoring; None unless a Rekor URL is configured.
     anchor_worker: AnchorWorker | None = None
+    # Per-user OAuth connection broker (#11). Set right after construction.
+    broker: OAuthBroker | None = None
 
     def rotate_control_key(self) -> KeyPairJwk:
         new_keys = generate_ed25519_key_pair()
@@ -441,4 +444,5 @@ def create_app_context(
     )
     if config.rekor_url:
         ctx.anchor_worker = AnchorWorker(store, RekorSink(config.rekor_url, http=rekor_http))
+    ctx.broker = OAuthBroker(store, vault, http, url)
     return ctx

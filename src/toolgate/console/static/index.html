@@ -35,6 +35,7 @@
     <button data-view="simulator">Simulator</button>
     <button data-view="reports">Reports</button>
     <button data-view="channels">Channels</button>
+    <button data-view="connections">Connections</button>
   </div>
 
   <div class="tenant-row">
@@ -92,6 +93,23 @@
     <p class="panel-label">slack bindings · slack user -> operator attribution</p>
     <table class="tbl mono" id="bindings-table">
       <thead><tr><th>slack user</th><th>operator</th><th>created</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="view" id="view-connections" hidden>
+    <p class="panel-label">per-user oauth connections · agents call with the user's account, never a shared secret</p>
+    <div class="sim-form">
+      <select id="conn-app" class="mono"></select>
+      <input id="conn-user" class="mono" placeholder="user id (usr_…)">
+      <button class="btn btn-primary" id="conn-start">Start connection</button>
+    </div>
+    <p class="hint mono" id="conn-url" hidden></p>
+    <p class="hint">Register provider apps via
+      <span class="mono">toolgate oauth add-app</span> (the client secret is sealed straight
+      into the vault). Send the authorize URL to the user; the callback completes the connection.</p>
+    <table class="tbl mono" id="connections-table">
+      <thead><tr><th>id</th><th>user</th><th>app</th><th>status</th><th>token expires</th><th></th></tr></thead>
       <tbody></tbody>
     </table>
   </section>

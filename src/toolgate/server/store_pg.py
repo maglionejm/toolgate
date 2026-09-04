@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS link_tokens (
     json TEXT NOT NULL,
     consumed_at TEXT
 );
+CREATE TABLE IF NOT EXISTS oauth_states (
+    state_hash TEXT PRIMARY KEY,
+    json TEXT NOT NULL,
+    consumed_at TEXT
+);
 CREATE TABLE IF NOT EXISTS rate_windows (
     key TEXT NOT NULL,
     window_start BIGINT NOT NULL,
@@ -256,6 +261,7 @@ _TABLES: dict[str, list[str]] = {
     "auth_failures": ["key", "count", "until_ms"],
     "deliveries": ["id", "tenant_id", "approval_id", "status", "next_attempt_ms", "json"],
     "link_tokens": ["token_hash", "json", "consumed_at"],
+    "oauth_states": ["state_hash", "json", "consumed_at"],
 }
 
 

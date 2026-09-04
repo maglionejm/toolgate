@@ -43,10 +43,20 @@ class QueryCredential(BaseModel):
     secretRef: str
 
 
+class OAuthUserCredential(BaseModel):
+    """Per-user third-party credential (#11): at call time the gate resolves
+    the OAuth connection belonging to the grant's userId and injects that
+    user's live access token — agents act with Sam's connection, never a
+    tenant-wide secret, and never see the token."""
+
+    mode: Literal["oauth_user"]
+    providerAppId: str = Field(min_length=1)
+
+
 # How the gate injects the real credential into the upstream request.
 # The secret itself lives in the vault under `secretRef` — never in this object.
 CredentialInjection = Annotated[
-    BearerCredential | HeaderCredential | QueryCredential,
+    BearerCredential | HeaderCredential | QueryCredential | OAuthUserCredential,
     Field(discriminator="mode"),
 ]
 
@@ -220,6 +230,44 @@ class ApprovalRequest(BaseModel):
     decidedAt: str | None = None
     decidedBy: str | None = None
     executedAt: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Upstream OAuth brokering (#11): tenant provider apps + per-user connections
+# ---------------------------------------------------------------------------
+
+
+class ProviderApp(BaseModel):
+    """A tenant-registered OAuth application at a third-party provider. The
+    client secret is sealed in the vault; only its ref lives here."""
+
+    id: str
+    tenantId: str
+    name: str = Field(min_length=1)
+    clientId: str = Field(min_length=1)
+    clientSecretRef: str
+    authorizeUrl: str = Field(min_length=1)
+    tokenUrl: str = Field(min_length=1)
+    scopes: list[str] = Field(default_factory=list)
+    createdAt: str
+
+
+class Connection(BaseModel):
+    """One user's authorized account at a provider. Token material lives only
+    in the vault (refs here); revocation deletes the sealed tokens outright."""
+
+    id: str
+    tenantId: str
+    userId: str
+    providerAppId: str
+    accessTokenRef: str
+    refreshTokenRef: str | None = None
+    # Access-token expiry (ISO); the broker refreshes transparently past it.
+    expiresAt: str
+    scopes: list[str] = Field(default_factory=list)
+    status: Literal["active", "revoked"] = "active"
+    createdAt: str
+    updatedAt: str
 
 
 # ---------------------------------------------------------------------------

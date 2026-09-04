@@ -271,6 +271,17 @@ Public (unauthenticated) surfaces:
 - `POST /v1/hooks/slack` — Slack interactivity callback; requests are verified against the channel's signing secret (v0 HMAC scheme, 5-minute replay window).
 - `GET /v1/approvals/link/{token}` — email magic link. Single-use, bound to `{approval, args hash, decision, operator}`, expires with the approval; consumed or expired links decide nothing.
 
+### Upstream OAuth brokering (per-user connections)
+
+Real SaaS tools authorize users, not tenants. Toolgate custodies each user's OAuth tokens and injects them at call time — agents act with Sam's connection and never see a token.
+
+- `POST /v1/control/provider-apps` (`owner`) — `{tenantId, name, clientId, clientSecret, authorizeUrl, tokenUrl, scopes[]}`; the client secret is sealed into the vault, never returned.
+- `GET /v1/control/provider-apps?tenantId=` (`auditor`)
+- `POST /v1/control/connections/start` (`approver`) — `{tenantId, userId, providerAppId}` → `{authorizeUrl}` for the user (authorization-code + PKCE S256; single-use state bound server-side to `{tenant, user, app, verifier}`). Point the provider's redirect URI at `GET /v1/connections/callback` (public; completes and seals the token set).
+- `GET /v1/control/connections?tenantId=[&userId=]` (`auditor`) — metadata only, token refs excluded.
+- `POST /v1/control/connections/{id}/revoke` (`approver`) — instant: sealed tokens are deleted; the next dependent call refuses.
+- Upstream credential mode `oauth_user` — `{"credential": {"mode": "oauth_user", "providerAppId": "oap_…"}}`. At call time the gate resolves the connection for the grant's `userId`, refreshes expired access tokens transparently (per-connection lock), and injects the live bearer. Failure taxonomy: `TG_CONNECTION_REQUIRED` (403, no active connection — the upstream is never invoked) and `TG_CONNECTION_FAILED` (502, refresh/exchange failure); both are audited.
+
 ## Health
 
 `GET /healthz` → `{ "ok": true, "issuer": "...", "control_kid": "..." }` (no auth).

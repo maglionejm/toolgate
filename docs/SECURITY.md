@@ -40,6 +40,7 @@ The **untrusted zone is the agent itself** — including its LLM context. Prompt
 | T15 | Tool-chain exfiltration (lethal trifecta) | txn taint + `when.txnTouchedUntrusted` policies | Gate + policy | yes |
 | T16 | Anonymous or over-broad admin actions | Operator identities + roles; break-glass audited | Control plane | yes |
 | T12 | Approval fatigue as an attack surface (OWASP T10) | Policy tiers: allow routine, approve consequential; budgets cap the rest | Policy design | design-level |
+| T17 | Third-party OAuth token theft/exfiltration | Tokens sealed in the vault (envelope encryption), never in agent surfaces or audit records; PKCE + single-use state on connect; instant revoke deletes sealed tokens; per-user injection means one stolen agent key exposes at most one user's connection | Broker + vault | yes |
 
 > The T8 "never in tokens, responses, or logs" guarantee covers **upstream credentials**. The **admin key** is a distinct secret — a control-plane bearer credential. As of this release it is no longer printed in plaintext at server boot; only a short fingerprint is logged, so an operator can confirm which key is active without the value ever appearing in logs. Set it explicitly via `TOOLGATE_ADMIN_KEY` and distribute it out-of-band.
 
