@@ -1,0 +1,6 @@
+# Gitleaks finding fingerprints confirmed as false positives.
+# Format: <commit>:<file>:<rule>:<line>
+
+# Documentation prose in the red-team spec ("stolen-token blast radius, forged/absent
+# rotation handoffs") matched the generic-api-key rule. No secret present.
+1007e93ff599f5c4516a63c6d570431a72170f84:openspec/changes/add-redteam-suite/proposal.md:generic-api-key:8

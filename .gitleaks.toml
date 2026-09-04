@@ -1,0 +1,16 @@
+# Extends the default ruleset; adds detection for Toolgate's own key formats
+# so a pasted real credential is caught anywhere, including docs and specs.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "toolgate-admin-key"
+description = "Toolgate break-glass admin key"
+regex = '''tgk_[A-Za-z0-9_-]{20,}'''
+keywords = ["tgk_"]
+
+[[rules]]
+id = "toolgate-operator-key"
+description = "Toolgate operator key"
+regex = '''opk_[A-Za-z0-9_-]{20,}'''
+keywords = ["opk_"]
