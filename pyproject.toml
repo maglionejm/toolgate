@@ -2,12 +2,15 @@
 # Distribution name: "toolgate" on PyPI is squatted (stale since 2024, PEP 541
 # reclaim pending) — the import name remains `toolgate`.
 name = "toolgate-io"
-version = "0.4.0"
+version = "0.4.1"
 description = "Capability control plane for embedded AI agents: scoped tokens, policy enforcement, credential injection, signed audit."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-authors = [{ name = "Juan Martin Maglione" }]
+authors = [
+    { name = "Juan Martin Maglione" },
+    { name = "Marc Puig" },
+]
 keywords = ["ai-agents", "security", "oauth", "capability-tokens", "delegation", "audit"]
 classifiers = [
     "Development Status :: 3 - Alpha",
