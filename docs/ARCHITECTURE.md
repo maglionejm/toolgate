@@ -105,6 +105,16 @@ Persistence: SQLite (stdlib `sqlite3`) behind a thin store interface — swap fo
 - **Proof v2**: PoP proofs bind the exact request body (`cd` claim).
 - **Surfaces**: MCP server at `/v1/mcp` (ADR 0009), operator console at `/console`, tool discovery at `/v1/gate/tools`, framework adapters (`toolgate.integrations`), async SDK, and usage reports derived from the signed chain.
 
-## Non-goals (0.4)
+## v0.5 additions
 
-Upstream OAuth token brokering (Arcade-style third-party OAuth), multi-region/Postgres scale-out, Rekor inclusion proofs, passkey operator login, WIMSE WIT/WPT credentials, AuthZEN PDP interface — tracked in the issue backlog.
+- **Upstream OAuth brokering**: tenant provider apps + per-user connections (authorization-code + PKCE, single-use state). Credential mode `oauth_user` resolves the calling grant's user connection at execution and refreshes transparently; revocation deletes sealed tokens instantly. Agents never see a token.
+- **Approval push channels**: parked approvals fan out to webhooks (gate-key detached JWS over the exact bytes), Slack (Block Kit + signature verification + Slack-user↔operator bindings, message updates on decision), and email magic links (single-use, args-hash bound). All decisions share one attribution path with the console.
+- **Proof-grade anchoring**: checkpoints published to a Rekor-compatible transparency log with persisted inclusion proofs; offline verification against a pinned log key detects post-compromise history rewrites (divergence report); WORM retention exports (fs write-once / S3 Object Lock).
+- **KMS envelope vault**: per-secret DEKs wrapped by an env-, GCP-KMS-, or AWS-KMS-held KEK; fail-closed boot; KEK rotation re-wraps without decrypting payloads; v1→v2 migration.
+- **Postgres scale-out**: DSN-selected store with database-enforced exactly-once (budget, jtis, approval claims, shared rate windows, seq-serialized audit appends); `toolgate migrate` from SQLite; CI runs two-instance concurrency tests.
+- **Adversarial verification**: a red-team suite (stolen tokens, rotation forgeries, taint evasion, tenant isolation, races) runs as a dedicated CI job; token-endpoint brute-force backoff with trusted-proxy attribution.
+- **Live demo**: `toolgate demo --live` drives the scenario with a real Claude model, ending in a prompt-injection act contained by taint policy regardless of model behavior.
+
+## Non-goals (0.5)
+
+Passkey operator login, WIMSE WIT/WPT credentials, AuthZEN PDP interface, field-level taint dataflow, TypeScript SDK rebuild — tracked in the issue backlog as they open.
