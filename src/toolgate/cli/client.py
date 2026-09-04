@@ -37,6 +37,9 @@ class AdminClient:
     def post(self, path: str, body: dict[str, Any] | None = None) -> Any:
         return self._handle(self._http.post(path, json=body or {}))
 
+    def delete(self, path: str) -> Any:
+        return self._handle(self._http.delete(path))
+
     def public(self, path: str) -> Any:
         # Unauthenticated endpoints (/healthz, /v1/keys).
         return self._handle(httpx.get(f"{self.url}{path}", timeout=15.0))

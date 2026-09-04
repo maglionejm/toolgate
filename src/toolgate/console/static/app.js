@@ -12,9 +12,9 @@ function authHeader() {
     : { "x-toolgate-admin-key": key };
 }
 
-async function api(path, body) {
+async function api(path, body, method) {
   const res = await fetch(path, {
-    method: body === undefined ? "GET" : "POST",
+    method: method || (body === undefined ? "GET" : "POST"),
     headers: { ...authHeader(), ...(body !== undefined ? { "content-type": "application/json" } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -79,6 +79,7 @@ async function render() {
   else if (view === "grants") await renderGrants();
   else if (view === "simulator") await loadPolicies();
   else if (view === "reports") await renderReports();
+  else if (view === "channels") await renderChannels();
 }
 
 /* ---------- approvals inbox ---------- */
@@ -97,11 +98,25 @@ async function renderApprovals() {
         <p class="c-head"><b>${esc(a.upstream)}.${esc(a.tool)}</b> · ${esc(a.id)}</p>
         <p class="c-meta">agent ${esc(a.agentId)} · for ${esc(a.userId)} · expires ${esc(a.expiresAt.slice(11, 19))}</p>
         <pre>${esc(JSON.stringify(a.args, null, 2))}</pre>
+        <p class="c-meta mono" data-deliveries>notifications: …</p>
         <button class="btn btn-primary btn-sm" data-act="approve">Approve exactly this</button>
         <button class="btn btn-deny btn-sm" data-act="deny">Deny</button>
       </div>`
     )
     .join("");
+  // Delivery status per card: which channels the parked approval reached.
+  await Promise.all(
+    pending.map(async (a) => {
+      const slot = wrap.querySelector(`.card[data-id="${CSS.escape(a.id)}"] [data-deliveries]`);
+      if (!slot) return;
+      try {
+        const rows = await api(`/v1/control/approvals/${a.id}/deliveries`);
+        slot.textContent = rows.length
+          ? "notifications: " + rows.map((d) => `${d.channelType} ${d.status}${d.attempts > 1 ? ` (x${d.attempts})` : ""}`).join(" · ")
+          : "notifications: no channels configured";
+      } catch { slot.textContent = "notifications: unavailable"; }
+    })
+  );
 }
 
 $("approvals-list").addEventListener("click", async (e) => {
@@ -192,6 +207,46 @@ async function renderReports() {
     )
     .join("");
 }
+
+/* ---------- channels ---------- */
+
+async function renderChannels() {
+  const [channels, bindings] = await Promise.all([
+    api(`/v1/control/channels?tenantId=${tenantId()}`),
+    api(`/v1/control/slack-bindings?tenantId=${tenantId()}`),
+  ]);
+  $("channels-table").querySelector("tbody").innerHTML = channels
+    .map(
+      (c) => `<tr>
+        <td>${esc(c.id)}</td><td>${esc(c.config.type)}</td><td>${esc(c.name)}</td>
+        <td class="${c.status === "active" ? "fx-allow" : "fx-deny"}">${esc(c.status)}</td>
+        <td><button class="btn btn-deny btn-sm" data-channel="${esc(c.id)}">delete</button></td>
+      </tr>`
+    )
+    .join("") || `<tr><td colspan="5" class="empty">no channels — parked approvals only surface here</td></tr>`;
+  $("bindings-table").querySelector("tbody").innerHTML = bindings
+    .map(
+      (b) => `<tr><td>${esc(b.slackUserId)}</td><td>${esc(b.operatorId)}</td><td>${esc(b.createdAt.slice(0, 19))}</td></tr>`
+    )
+    .join("") || `<tr><td colspan="3" class="empty">no bindings — bind via: toolgate slack bind</td></tr>`;
+}
+
+$("chn-add").addEventListener("click", async () => {
+  const name = $("chn-name").value.trim();
+  const url = $("chn-url").value.trim();
+  if (!name || !url) return;
+  await api("/v1/control/channels", { tenantId: tenantId(), name, type: "webhook", url });
+  $("chn-name").value = ""; $("chn-url").value = "";
+  await renderChannels();
+});
+
+$("channels-table").addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-channel]");
+  if (!btn) return;
+  if (!confirm(`Delete channel ${btn.dataset.channel}?`)) return;
+  await api(`/v1/control/channels/${btn.dataset.channel}`, undefined, "DELETE");
+  await renderChannels();
+});
 
 /* ---------- simulator ---------- */
 

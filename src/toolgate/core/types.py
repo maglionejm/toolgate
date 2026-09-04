@@ -223,6 +223,88 @@ class ApprovalRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Approval notification channels (webhook, Slack, email magic links)
+# ---------------------------------------------------------------------------
+
+
+class WebhookChannelConfig(BaseModel):
+    type: Literal["webhook"]
+    url: str = Field(min_length=1)
+
+
+class SlackChannelConfig(BaseModel):
+    type: Literal["slack"]
+    # Slack channel id the approval messages are posted to.
+    channel: str = Field(min_length=1)
+    # Sealed-secret refs: the bot token posts messages, the signing secret
+    # verifies interactivity callbacks. Raw values never live in this object.
+    botTokenRef: str
+    signingSecretRef: str
+
+
+class EmailRecipient(BaseModel):
+    email: str = Field(min_length=3)
+    # Decisions from this recipient's magic links are attributed to this operator.
+    operatorId: str = Field(min_length=1)
+
+
+class EmailChannelConfig(BaseModel):
+    type: Literal["email"]
+    smtpHost: str = Field(min_length=1)
+    smtpPort: int = Field(default=587, gt=0)
+    smtpUser: str | None = None
+    smtpPasswordRef: str | None = None
+    fromAddress: str = Field(min_length=3)
+    useTls: bool = True
+    recipients: list[EmailRecipient] = Field(min_length=1)
+
+
+ChannelConfig = Annotated[
+    WebhookChannelConfig | SlackChannelConfig | EmailChannelConfig,
+    Field(discriminator="type"),
+]
+
+
+class NotificationChannel(BaseModel):
+    id: str
+    tenantId: str
+    name: str = Field(min_length=1)
+    config: ChannelConfig
+    status: Literal["active", "disabled"] = "active"
+    createdAt: str
+
+
+class SlackBinding(BaseModel):
+    """Maps a Slack user to an operator so Slack decisions carry real operator
+    attribution. Unbound Slack users are refused."""
+
+    tenantId: str
+    slackUserId: str = Field(min_length=1)
+    operatorId: str = Field(min_length=1)
+    createdAt: str
+
+
+class Delivery(BaseModel):
+    """One notification attempt stream: channel x approval x event. Retried
+    with backoff until delivered, failed, or attempts are exhausted."""
+
+    id: str
+    tenantId: str
+    channelId: str
+    channelType: Literal["webhook", "slack", "email"]
+    approvalId: str
+    event: Literal["parked", "decided", "expired"]
+    status: Literal["pending", "delivered", "failed"]
+    attempts: int = 0
+    lastError: str | None = None
+    nextAttemptAt: str
+    createdAt: str
+    updatedAt: str
+    # Channel bookkeeping (e.g. Slack message ts for later chat.update).
+    meta: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
 # Capability token claims
 # ---------------------------------------------------------------------------
 

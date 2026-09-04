@@ -30,6 +30,7 @@ from toolgate.core import (
     verify_checkpoint,
 )
 
+from .notifier import Notifier
 from .ratelimit import SlidingWindowLimiter
 from .store import Store
 from .vault import Vault
@@ -205,6 +206,9 @@ class AppContext:
     # summarized into the audit chain at most hourly).
     auth_failure_counts: dict[str, int] = field(default_factory=dict)
     last_failure_summary: float = 0.0
+    # Approval push notifications (webhook/Slack/email). Set right after
+    # construction; None only in exotic embedding scenarios.
+    notifier: Notifier | None = None
 
     def rotate_control_key(self) -> KeyPairJwk:
         new_keys = generate_ed25519_key_pair()
@@ -267,6 +271,8 @@ def create_app_context(
     dev_mode: bool = True,
     anchor_url: str | None = None,
     http_client: httpx.AsyncClient | None = None,
+    notify_http: httpx.Client | None = None,
+    mailer: object | None = None,
 ) -> AppContext:
     """Build the application context.
 
@@ -326,7 +332,7 @@ def create_app_context(
     gate_keyset = _load_or_create_keyset(store, "gate")
     control_keyset = _load_or_create_keyset(store, "control")
     control_keys = control_keyset[0]
-    return AppContext(
+    ctx = AppContext(
         store=store,
         vault=Vault(master),
         audit=AuditLog(
@@ -348,3 +354,13 @@ def create_app_context(
         gate_limiter=SlidingWindowLimiter(config.gate_rate_limit, config.rate_window_seconds),
         http=http,
     )
+    ctx.notifier = Notifier(
+        store=store,
+        vault=ctx.vault,
+        public_url=url,
+        # Resolved per delivery so gate-key rotation is picked up immediately.
+        signer=lambda: (ctx.gate_keys.private_jwk, ctx.gate_keys.kid),
+        http=notify_http,
+        mailer=mailer,  # type: ignore[arg-type]
+    )
+    return ctx

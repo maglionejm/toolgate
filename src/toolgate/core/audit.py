@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -166,6 +167,58 @@ def _sign_hash(hash_hex: str, private_key: SigningKey) -> str:
 def _verify_hash_signature(hash_hex: str, sig: str, key: Ed25519PublicKey) -> bool:
     try:
         key.verify(_b64url_decode(sig), bytes.fromhex(hash_hex))
+        return True
+    except (InvalidSignature, ValueError):
+        return False
+
+
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def sign_detached_jws(payload: bytes, private_key: SigningKey, *, kid: str) -> str:
+    """Detached compact JWS (RFC 7515 appendix F) over the exact payload bytes,
+    signed with the gate key — the same signing discipline as the audit chain.
+    Used for outbound webhook notifications: the receiver re-attaches the body
+    it received and verifies against the gate's published JWKS."""
+    header = _b64url_encode(
+        json.dumps(
+            {"alg": "EdDSA", "typ": "tg-hook+jws", "kid": kid}, separators=(",", ":")
+        ).encode()
+    )
+    key = (
+        private_key
+        if isinstance(private_key, Ed25519PrivateKey)
+        else signing_key_from_jwk(private_key)
+    )
+    sig = key.sign(f"{header}.{_b64url_encode(payload)}".encode())
+    return f"{header}..{_b64url_encode(sig)}"
+
+
+def verify_detached_jws(
+    jws: str, payload: bytes, gate_public_jwk: VerifyKey | dict[str, VerifyKey]
+) -> bool:
+    """Verify a detached JWS against the payload bytes. Accepts a single key or
+    a kid -> key JWKS mapping (the shape served at /v1/keys)."""
+    parts = jws.split(".")
+    if len(parts) != 3 or parts[1] != "":
+        return False
+    header_b64, _, sig_b64 = parts
+    try:
+        header = json.loads(_b64url_decode(header_b64))
+    except (ValueError, TypeError):
+        return False
+    if not isinstance(header, dict) or header.get("alg") != "EdDSA":
+        return False
+    if _is_jwks_mapping(gate_public_jwk):
+        candidate = gate_public_jwk.get(header.get("kid"))  # type: ignore[union-attr]
+        key = _coerce_verify_key(candidate) if candidate is not None else None
+    else:
+        key = _coerce_verify_key(gate_public_jwk)  # type: ignore[arg-type]
+    if key is None:
+        return False
+    try:
+        key.verify(_b64url_decode(sig_b64), f"{header_b64}.{_b64url_encode(payload)}".encode())
         return True
     except (InvalidSignature, ValueError):
         return False

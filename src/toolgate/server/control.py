@@ -21,16 +21,22 @@ from toolgate.core import (
     AuthorizationDetail,
     Budget,
     DelegationGrant,
+    EmailChannelConfig,
+    EmailRecipient,
     ErrorCodes,
+    NotificationChannel,
     Operator,
     Policy,
     PolicyRule,
+    SlackBinding,
+    SlackChannelConfig,
     Tenant,
     ToolCallContext,
     ToolDef,
     ToolgateError,
     Upstream,
     User,
+    WebhookChannelConfig,
     decide,
     evaluate_policy,
     hash_args,
@@ -41,6 +47,7 @@ from toolgate.core import (
     verify_client_assertion,
 )
 
+from .approvals import decide_approval as _decide_approval_shared
 from .context import AppContext
 
 # Cloud instance-metadata endpoints are never a legitimate upstream; they are
@@ -160,6 +167,40 @@ class SimulateCall(BaseModel):
 
 class RotateKeys(BaseModel):
     plane: Literal["control", "gate"]
+
+
+class EmailRecipientInput(BaseModel):
+    email: str = Field(min_length=3)
+    operatorId: str = Field(min_length=1)
+
+
+class CreateChannel(BaseModel):
+    """Channel creation carries raw secrets exactly once; they are sealed into
+    the vault and only refs are stored (same discipline as upstream creds)."""
+
+    tenantId: str
+    name: str = Field(min_length=1)
+    type: Literal["webhook", "slack", "email"]
+    # webhook
+    url: str | None = None
+    # slack
+    slackChannel: str | None = None
+    botToken: str | None = None
+    signingSecret: str | None = None
+    # email
+    smtpHost: str | None = None
+    smtpPort: int = 587
+    smtpUser: str | None = None
+    smtpPassword: str | None = None
+    fromAddress: str | None = None
+    useTls: bool = True
+    recipients: list[EmailRecipientInput] | None = None
+
+
+class CreateSlackBinding(BaseModel):
+    tenantId: str
+    slackUserId: str = Field(min_length=1)
+    operatorId: str = Field(min_length=1)
 
 
 class TokenRequest(BaseModel):
@@ -459,26 +500,138 @@ def control_router(ctx: AppContext) -> APIRouter:
         approval = ctx.store.get_approval(approval_id)
         if not approval:
             raise _not_found("approval", approval_id)
-        if approval.status != "pending":
-            raise ToolgateError(
-                ErrorCodes.VALIDATION, f"approval is {approval.status}, not pending"
+        principal: Principal = request.state.principal
+        decided = _decide_approval_shared(
+            ctx,
+            approval,
+            body.decision,
+            decided_by=body.decidedBy or principal.id,
+            decided_by_name=principal.name,
+            via="console",
+        )
+        return decided.model_dump(mode="json", exclude_none=True)
+
+    @router.get("/approvals/{approval_id}/deliveries", dependencies=auditor_dep)
+    async def approval_deliveries(approval_id: str) -> list[dict[str, Any]]:
+        return [
+            d.model_dump(mode="json", exclude_none=True)
+            for d in ctx.store.deliveries_for_approval(approval_id)
+        ]
+
+    # -- notification channels (#13) -------------------------------------------------
+
+    @router.post("/channels", status_code=201, dependencies=owner_dep)
+    async def create_channel(body: CreateChannel, request: Request) -> dict[str, Any]:
+        _require_tenant(ctx, body.tenantId)
+        channel_id = new_id("chn")
+        if body.type == "webhook":
+            if not body.url or not body.url.startswith(("https://", "http://")):
+                raise ToolgateError(ErrorCodes.VALIDATION, "webhook channels need a valid url")
+            config: Any = WebhookChannelConfig(type="webhook", url=body.url)
+        elif body.type == "slack":
+            if not (body.slackChannel and body.botToken and body.signingSecret):
+                raise ToolgateError(
+                    ErrorCodes.VALIDATION,
+                    "slack channels need slackChannel, botToken, and signingSecret",
+                )
+            token_ref = f"sec_{channel_id}_bot"
+            secret_ref = f"sec_{channel_id}_sig"
+            ctx.store.put_secret(token_ref, ctx.vault.seal(body.botToken))
+            ctx.store.put_secret(secret_ref, ctx.vault.seal(body.signingSecret))
+            config = SlackChannelConfig(
+                type="slack",
+                channel=body.slackChannel,
+                botTokenRef=token_ref,
+                signingSecretRef=secret_ref,
             )
-        if datetime.fromisoformat(approval.expiresAt) < datetime.now(UTC):
-            approval.status = "expired"
-            ctx.store.put_approval(approval)
-            raise ToolgateError(ErrorCodes.VALIDATION, "approval expired")
-        approval.status = "approved" if body.decision == "approve" else "denied"
-        approval.decidedAt = _now()
-        approval.decidedBy = body.decidedBy or request.state.principal.id
-        ctx.store.put_approval(approval)
+        else:
+            if not (body.smtpHost and body.fromAddress and body.recipients):
+                raise ToolgateError(
+                    ErrorCodes.VALIDATION,
+                    "email channels need smtpHost, fromAddress, and recipients",
+                )
+            recipients = []
+            for r in body.recipients:
+                operator = ctx.store.get_operator(r.operatorId)
+                if operator is None or operator.status != "active":
+                    raise ToolgateError(
+                        ErrorCodes.VALIDATION, f"recipient operator {r.operatorId} not active"
+                    )
+                recipients.append(EmailRecipient(email=r.email, operatorId=r.operatorId))
+            password_ref = None
+            if body.smtpPassword:
+                password_ref = f"sec_{channel_id}_smtp"
+                ctx.store.put_secret(password_ref, ctx.vault.seal(body.smtpPassword))
+            config = EmailChannelConfig(
+                type="email",
+                smtpHost=body.smtpHost,
+                smtpPort=body.smtpPort,
+                smtpUser=body.smtpUser,
+                smtpPasswordRef=password_ref,
+                fromAddress=body.fromAddress,
+                useTls=body.useTls,
+                recipients=recipients,
+            )
+        channel = NotificationChannel(
+            id=channel_id,
+            tenantId=body.tenantId,
+            name=body.name,
+            config=config,
+            status="active",
+            createdAt=_now(),
+        )
+        ctx.store.put_channel(channel)
         _ops_audit(
             request,
-            f"approvals.{body.decision}",
-            {"id": approval.id, "tool": f"{approval.upstream}.{approval.tool}",
-             "argsHash": hash_args(approval.args)},
-            approval.tenantId,
+            "channels.create",
+            {"id": channel.id, "type": body.type, "name": body.name},
+            body.tenantId,
         )
-        return approval.model_dump(mode="json", exclude_none=True)
+        return channel.model_dump(mode="json", exclude_none=True)
+
+    @router.get("/channels", dependencies=auditor_dep)
+    async def list_channels(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
+        # Secrets never leave the vault; configs carry refs only.
+        return [
+            c.model_dump(mode="json", exclude_none=True)
+            for c in ctx.store.list_channels(tenantId)
+        ]
+
+    @router.delete("/channels/{channel_id}", dependencies=owner_dep)
+    async def delete_channel(channel_id: str, request: Request) -> dict[str, Any]:
+        channel = ctx.store.get_channel(channel_id)
+        if not channel:
+            raise _not_found("channel", channel_id)
+        ctx.store.delete_channel(channel_id)
+        _ops_audit(request, "channels.delete", {"id": channel_id}, channel.tenantId)
+        return {"id": channel_id, "deleted": True}
+
+    @router.post("/slack-bindings", status_code=201, dependencies=owner_dep)
+    async def create_slack_binding(
+        body: CreateSlackBinding, request: Request
+    ) -> dict[str, Any]:
+        _require_tenant(ctx, body.tenantId)
+        operator = ctx.store.get_operator(body.operatorId)
+        if operator is None or operator.status != "active":
+            raise ToolgateError(ErrorCodes.VALIDATION, f"operator {body.operatorId} not active")
+        binding = SlackBinding(
+            tenantId=body.tenantId,
+            slackUserId=body.slackUserId,
+            operatorId=body.operatorId,
+            createdAt=_now(),
+        )
+        ctx.store.put_slack_binding(binding)
+        _ops_audit(
+            request,
+            "slack-bindings.create",
+            {"slackUserId": body.slackUserId, "operatorId": body.operatorId},
+            body.tenantId,
+        )
+        return binding.model_dump(mode="json")
+
+    @router.get("/slack-bindings", dependencies=auditor_dep)
+    async def list_slack_bindings(tenantId: Annotated[str, Query()]) -> list[dict[str, Any]]:
+        return [b.model_dump(mode="json") for b in ctx.store.list_slack_bindings(tenantId)]
 
     @router.get("/audit", dependencies=auditor_dep)
     async def list_audit(

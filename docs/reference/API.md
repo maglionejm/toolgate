@@ -252,6 +252,25 @@ Reads require `auditor`+, approval decisions `approver`+, mutations `owner`. All
 
 The operator console is served at `/console` (static SPA; authenticates with operator keys client-side).
 
+## Added in 0.5
+
+### Approval notification channels
+
+Parked approvals push to per-tenant channels; deciding anywhere keeps operator attribution and lands in the same signed audit chain.
+
+- `POST /v1/control/channels` (`owner`) — create a channel. Common: `{tenantId, name, type}` plus per type:
+  - `webhook`: `{url}` — payloads are signed with the gate key (detached JWS; header `x-toolgate-signature`, `x-toolgate-kid`, replay-safe `x-toolgate-delivery` id). Verify against `GET /v1/keys` `gate_jwks`.
+  - `slack`: `{slackChannel, botToken, signingSecret}` — secrets are sealed into the vault at creation; only refs are ever returned.
+  - `email`: `{smtpHost, smtpPort?, smtpUser?, smtpPassword?, fromAddress, useTls?, recipients: [{email, operatorId}]}` — each recipient gets single-use approve/deny magic links attributed to their operator.
+- `GET /v1/control/channels?tenantId=` (`auditor`) · `DELETE /v1/control/channels/{id}` (`owner`)
+- `POST /v1/control/slack-bindings` `{tenantId, slackUserId, operatorId}` (`owner`) · `GET /v1/control/slack-bindings?tenantId=` — Slack decisions require a bound, active `approver`+ operator; unbound users are refused with guidance.
+- `GET /v1/control/approvals/{id}/deliveries` (`auditor`) — per-channel delivery status (`pending`/`delivered`/`failed`, attempts, last error). Retries use exponential backoff (up to 6 attempts).
+
+Public (unauthenticated) surfaces:
+
+- `POST /v1/hooks/slack` — Slack interactivity callback; requests are verified against the channel's signing secret (v0 HMAC scheme, 5-minute replay window).
+- `GET /v1/approvals/link/{token}` — email magic link. Single-use, bound to `{approval, args hash, decision, operator}`, expires with the approval; consumed or expired links decide nothing.
+
 ## Health
 
 `GET /healthz` → `{ "ok": true, "issuer": "...", "control_kid": "..." }` (no auth).

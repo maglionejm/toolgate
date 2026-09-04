@@ -1,11 +1,13 @@
 import hashlib
 import os
 import sys
+import threading
+import time
 
 import uvicorn
 
 from .app import create_app
-from .context import create_app_context
+from .context import AppContext, create_app_context
 
 
 def _truthy(value: str | None) -> bool:
@@ -17,6 +19,18 @@ def _admin_key_fingerprint(admin_key: str) -> str:
     # Docker / Cloud Logging forever. A short digest lets an operator confirm
     # *which* key is loaded without exposing it.
     return hashlib.sha256(admin_key.encode()).hexdigest()[:12]
+
+
+def _notification_worker(ctx: AppContext) -> None:
+    """Retry loop for approval notifications: due deliveries are attempted with
+    exponential backoff until delivered or exhausted (see notifier.py)."""
+    while True:
+        time.sleep(1.0)
+        try:
+            if ctx.notifier:
+                ctx.notifier.process_due()
+        except Exception as err:  # noqa: BLE001 - the worker must survive anything
+            print(f"[toolgate] notification worker error: {err}", file=sys.stderr)
 
 
 def main() -> None:
@@ -46,6 +60,7 @@ def main() -> None:
             "of this process; the control plane must not be reachable in cleartext.",
             file=sys.stderr,
         )
+    threading.Thread(target=_notification_worker, args=(ctx,), daemon=True).start()
     uvicorn.run(create_app(ctx), host=host, port=port, log_level="warning")
 
 

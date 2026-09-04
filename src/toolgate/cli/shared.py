@@ -19,6 +19,7 @@ __all__ = [
     "agents_app",
     "approvals_app",
     "audit_app",
+    "channels_app",
     "client",
     "console",
     "dev_app",
@@ -28,6 +29,7 @@ __all__ = [
     "keys_app",
     "operators_app",
     "policies_app",
+    "slack_app",
     "state",
     "tenants_app",
     "token_app",
@@ -50,6 +52,10 @@ audit_app = typer.Typer(no_args_is_help=True, help="Signed audit chain.")
 token_app = typer.Typer(no_args_is_help=True, help="Capability token utilities.")
 dev_app = typer.Typer(no_args_is_help=True, help="Developer harness (acts as an agent).")
 operators_app = typer.Typer(no_args_is_help=True, help="Control-plane operators and roles.")
+channels_app = typer.Typer(
+    no_args_is_help=True, help="Approval notification channels (webhook, Slack, email)."
+)
+slack_app = typer.Typer(no_args_is_help=True, help="Slack user <-> operator bindings.")
 
 
 def client() -> AdminClient:

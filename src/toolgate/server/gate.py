@@ -146,6 +146,10 @@ async def run_gate_call(
                 result=AuditResult(status="pending_approval"),
             )
         )
+        # Push the parked approval to every configured channel (#13). Delivery
+        # runs off the request path; the agent's 202 is not delayed by it.
+        if ctx.notifier:
+            ctx.notifier.fanout(approval, "parked")
         return GateOutcome(
             status="pending_approval",
             call_id=call_id,

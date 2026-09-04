@@ -60,6 +60,22 @@ toolgate approvals watch -t tnt_... --by usr_...      # interactive inbox: promp
 
 Decisions apply to the exact argument set shown — agents cannot swap arguments afterwards.
 
+## Notification channels (0.5)
+
+```bash
+toolgate channels list -t tnt_...
+toolgate channels add-webhook -t tnt_... --name hooks --url https://ops.example/toolgate
+toolgate channels add-slack   -t tnt_... --name slack --channel C0123   # prompts for secrets
+toolgate channels add-email   -t tnt_... --name mail --smtp-host smtp.example \
+    --from-address toolgate@acme.example --recipient ana@acme.example:op_...
+toolgate channels deliveries apr_...          # per-channel delivery status
+toolgate channels delete chn_...
+toolgate slack bind -t tnt_... --slack-user U0123 --operator op_...
+toolgate slack bindings -t tnt_...
+```
+
+Parked approvals fan out to every active channel; decisions from Slack or email carry the bound operator's attribution in the audit chain, exactly like console decisions.
+
 ## Audit
 
 ```bash
