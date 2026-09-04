@@ -185,6 +185,17 @@ def _require_tenant(ctx: AppContext, tenant_id: str) -> None:
 _ROLE_RANK = {"auditor": 0, "approver": 1, "owner": 2}
 
 
+def client_source(request: Request, trusted_proxies: tuple[str, ...]) -> str:
+    """Rate-limit key for the caller. X-Forwarded-For is honored only when the
+    direct peer is a trusted proxy; otherwise a spoofed header buys nothing."""
+    peer = request.client.host if request.client else "unknown"
+    if peer in trusted_proxies:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return peer
+
+
 @dataclass(frozen=True)
 class Principal:
     id: str
@@ -669,16 +680,58 @@ def token_router(ctx: AppContext) -> APIRouter:
     of a client assertion + grant reference for a capability token."""
     router = APIRouter()
 
+    def _fail(reason: str, keys: list[str]) -> None:
+        """Record a failed exchange: telemetry, backoff bump, hourly summary."""
+        ctx.auth_failure_counts[reason] = ctx.auth_failure_counts.get(reason, 0) + 1
+        for key in keys:
+            ctx.store.auth_failure_bump(key)
+        now = time.time()
+        if now - ctx.last_failure_summary > 3600:
+            ctx.last_failure_summary = now
+            ctx.audit.record(
+                AuditRecordInput(
+                    id=new_id("evt"),
+                    tenantId="-",
+                    ts=_now(),
+                    actor=AuditActor(
+                        agentId="system", userId="system", grantId="-", tokenJti="-"
+                    ),
+                    action=AuditAction(
+                        callId=new_id("call"),
+                        upstream="control",
+                        tool="token-exchange-failures",
+                        argsHash=hash_args(dict(ctx.auth_failure_counts)),
+                    ),
+                    decision=AuditDecision(
+                        effect="deny",
+                        source="system",
+                        reason=f"failure summary: {dict(ctx.auth_failure_counts)}",
+                    ),
+                    result=AuditResult(status="denied"),
+                )
+            )
+
     @router.post("/v1/token")
-    async def exchange(body: TokenRequest) -> dict[str, Any]:
+    async def exchange(body: TokenRequest, request: Request) -> dict[str, Any]:
         if not ctx.token_limiter.allow(body.grant_id):
             raise ToolgateError(
                 ErrorCodes.RATE_LIMITED, "token exchange rate limit exceeded for this grant"
             )
+        source = client_source(request, ctx.config.trusted_proxies)
+        backoff_keys = [f"src:{source}", f"grant:{body.grant_id}"]
+        wait = max(ctx.store.auth_backoff_remaining(k) for k in backoff_keys)
+        if wait > 0:
+            raise ToolgateError(
+                ErrorCodes.RATE_LIMITED,
+                f"too many failed exchanges; retry in {wait}s",
+                {"retry_after_seconds": wait},
+            )
         grant = ctx.store.get_grant(body.grant_id)
         if not grant:
+            _fail("unknown_grant", backoff_keys)
             raise ToolgateError(ErrorCodes.NOT_FOUND, "unknown grant")
         if grant.status != "active":
+            _fail("revoked_grant", backoff_keys)
             raise ToolgateError(ErrorCodes.REVOKED, "grant revoked")
         if datetime.fromisoformat(grant.expiresAt) < datetime.now(UTC):
             raise ToolgateError(ErrorCodes.TOKEN_EXPIRED, "grant expired")
@@ -688,13 +741,22 @@ def token_router(ctx: AppContext) -> APIRouter:
             raise ToolgateError(ErrorCodes.REVOKED, "agent unknown or disabled")
 
         token_url = f"{ctx.config.issuer}/v1/token"
-        assertion = verify_client_assertion(
-            agent.publicJwk, body.client_assertion, expected_audience=token_url
-        )
+        try:
+            assertion = verify_client_assertion(
+                agent.publicJwk, body.client_assertion, expected_audience=token_url
+            )
+        except ToolgateError:
+            _fail("bad_assertion", backoff_keys)
+            raise
         if assertion.agent_id != grant.agentId:
+            _fail("agent_mismatch", backoff_keys)
             raise ToolgateError(ErrorCodes.TOKEN_INVALID, "assertion is not from the granted agent")
         if not ctx.store.consume_jti(assertion.jti, "assertion", 300):
+            _fail("assertion_replay", backoff_keys)
             raise ToolgateError(ErrorCodes.TOKEN_INVALID, "client assertion replayed")
+
+        for key in backoff_keys:
+            ctx.store.auth_failures_clear(key)
 
         ttl = min(
             body.requested_ttl_seconds or ctx.config.token_ttl_seconds,

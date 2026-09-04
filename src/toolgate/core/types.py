@@ -266,7 +266,7 @@ class CapabilityClaims(BaseModel):
 
 DecisionEffect = Literal["allow", "deny", "require_approval"]
 DecisionSource = Literal[
-    "token_bounds", "rule", "constraint", "budget", "approval", "default", "operator"
+    "token_bounds", "rule", "constraint", "budget", "approval", "default", "operator", "system"
 ]
 
 

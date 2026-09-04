@@ -65,6 +65,9 @@ class ServerConfig:
     # scope closes the txn-splitting evasion — a fresh token cannot launder
     # taint — at the cost of one untrusted read tainting the entire grant.
     taint_scope: str = "txn"
+    # Peers allowed to set X-Forwarded-For (comma-separated in
+    # TOOLGATE_TRUSTED_PROXIES). Spoofed XFF from anyone else is ignored.
+    trusted_proxies: tuple[str, ...] = ()
 
 
 class AuditLog:
@@ -198,6 +201,10 @@ class AppContext:
         default_factory=lambda: SlidingWindowLimiter(300, 60.0)
     )
     http: httpx.AsyncClient = field(default_factory=httpx.AsyncClient)
+    # In-memory failure telemetry by reason class (exposed via /healthz detail;
+    # summarized into the audit chain at most hourly).
+    auth_failure_counts: dict[str, int] = field(default_factory=dict)
+    last_failure_summary: float = 0.0
 
     def rotate_control_key(self) -> KeyPairJwk:
         new_keys = generate_ed25519_key_pair()
@@ -308,6 +315,9 @@ def create_app_context(
         allow_insecure_upstreams=dev_mode,
         anchor_url=anchor_url or os.environ.get("TOOLGATE_ANCHOR_URL"),
         taint_scope=os.environ.get("TOOLGATE_TAINT_SCOPE", "txn"),
+        trusted_proxies=tuple(
+            p.strip() for p in os.environ.get("TOOLGATE_TRUSTED_PROXIES", "").split(",") if p.strip()
+        ),
     )
 
     http = http_client or httpx.AsyncClient(timeout=30.0)

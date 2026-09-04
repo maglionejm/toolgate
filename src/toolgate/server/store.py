@@ -62,6 +62,11 @@ CREATE TABLE IF NOT EXISTS txn_taint (
     txn TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS auth_failures (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    until_ms INTEGER NOT NULL
+);
 """
 
 
@@ -282,6 +287,36 @@ class Store:
             "OR json_extract(json, '$.expiresAt') < ?)",
             (now_iso,),
         )
+
+    # -- auth failure backoff ----------------------------------------------------------
+
+    def auth_failure_bump(self, key: str, threshold: int = 5, cap_seconds: int = 300) -> int:
+        """Record a failed auth attempt; returns backoff seconds now in force
+        (0 while under the threshold). Exponential from the threshold, capped."""
+        now_ms = int(time.time() * 1000)
+        row = self.db.execute(
+            "SELECT count FROM auth_failures WHERE key = ?", (key,)
+        ).fetchone()
+        count = (row[0] if row else 0) + 1
+        backoff = min(2 ** (count - threshold), cap_seconds) if count >= threshold else 0
+        self.db.execute(
+            "INSERT INTO auth_failures (key, count, until_ms) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET count = excluded.count, until_ms = excluded.until_ms",
+            (key, count, now_ms + backoff * 1000),
+        )
+        return backoff
+
+    def auth_backoff_remaining(self, key: str) -> int:
+        row = self.db.execute(
+            "SELECT until_ms FROM auth_failures WHERE key = ?", (key,)
+        ).fetchone()
+        if not row:
+            return 0
+        remaining_ms = row[0] - int(time.time() * 1000)
+        return max(0, -(-remaining_ms // 1000))  # ceil to whole seconds
+
+    def auth_failures_clear(self, key: str) -> None:
+        self.db.execute("DELETE FROM auth_failures WHERE key = ?", (key,))
 
     # -- one-time jtis --------------------------------------------------------------
 
