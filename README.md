@@ -166,4 +166,4 @@ Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Security findi
 
 ## License
 
-[Apache License 2.0](LICENSE) © 2026 Juan Martin Maglione. Toolgate is early-stage software (pre-1.0): the wire format is a compatibility surface we take seriously, but expect movement before 1.0.
+[Apache License 2.0](LICENSE) © 2026 Juan Martin Maglione. Co-authored with [Marc Puig](https://github.com/mpuig) — see [AUTHORS.md](AUTHORS.md). Toolgate is early-stage software (pre-1.0): the wire format is a compatibility surface we take seriously, but expect movement before 1.0.
