@@ -24,6 +24,7 @@ uv run toolgate-demo        # end-to-end sanity
 - The wire format (camelCase fields, token claims, endpoints) is a compatibility surface; changes to it need an ADR in `docs/adr/`.
 - New behavior ships with documentation (`docs/`), not just code.
 - No credentials, tokens, or real endpoints in code, tests, fixtures, or issue text — ever.
+- Never stage local runtime state: databases and their sidecars (`*.db`, `*.db-wal`, `*.db-shm`), `.toolgate.env`, key files. Prefer explicit `git add <paths>` over `git add -A`.
 
 ## Reporting security issues
 
