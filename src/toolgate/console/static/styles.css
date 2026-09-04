@@ -8,6 +8,9 @@
   --sans: "Archivo", sans-serif;
 }
 * { box-sizing: border-box; margin: 0; }
+/* Author display values (e.g. .login { display: grid }) beat the UA [hidden]
+   rule — restore hidden's meaning unconditionally. */
+[hidden] { display: none !important; }
 body { background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 15px; }
 .mono { font-family: var(--mono); }
 
