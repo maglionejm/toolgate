@@ -1,0 +1,23 @@
+schema: spec-driven
+
+context: |
+  Toolgate: capability control plane for AI agents (Python 3.12+, FastAPI,
+  pydantic v2, jwcrypto/cryptography, stdlib sqlite3, uv/ruff/pytest).
+  Security invariants that every change must preserve:
+  - agents never hold credentials; capability tokens are short-lived and PoP-bound
+  - the gate pipeline order is verify -> bounds -> policy -> budget -> inject -> execute -> audit
+  - every terminal decision (including denials) lands in the signed audit chain
+  - wire/storage field names are camelCase (protocol compatibility surface)
+  Workflow: GitHub issues + PRs, squash merge, CI = ruff + pytest + pip-audit +
+  gitleaks. Docs live in docs/ (ADRs under docs/adr). Each change package here
+  maps 1:1 to an open GitHub issue named in its proposal.
+
+rules:
+  proposal:
+    - Name the GitHub issue the change implements
+    - Include a Non-goals line when scope could creep
+  specs:
+    - Requirements use SHALL and carry at least one scenario
+    - Note wire-format impact explicitly (camelCase, hash-stability of audit records)
+  tasks:
+    - End with a verification section (tests + docs updates)
