@@ -8,7 +8,9 @@
 
 **Portal & live simulation: [maglionejm.github.io/toolgate](https://maglionejm.github.io/toolgate/)** — try the gate and tamper with a real hash chain in your browser.
 
-**New in 0.4:** MCP surface (any MCP client consumes gated tools), operator identities + roles, operator console at `/console`, body-bound PoP proofs, key rotation with in-chain lineage, Merkle-checkpointed + anchorable audit, taint-tracking policies (lethal-trifecta defense), framework adapters, async SDK, usage reports, and an official Docker image (`toolgate up`).
+**New in 0.5:** per-user **OAuth brokering** (agents call SaaS tools with the user's own connection — Toolgate custodies the tokens), **approval push channels** (signed webhooks, Slack with operator-bound decisions, email magic links), **transparency-log anchoring** with offline divergence detection + WORM retention exports, **KMS envelope encryption** for the vault (GCP/AWS), a **Postgres store** with multi-instance exactly-once guarantees, a **live LLM demo** (`toolgate demo --live`) with a prompt-injection containment act, token-endpoint brute-force protections, and a red-team suite that runs in CI.
+
+**0.4 shipped:** MCP surface, operator identities + roles, console at `/console`, body-bound PoP proofs, key rotation with in-chain lineage, Merkle-checkpointed audit, taint-tracking policies (lethal-trifecta defense), framework adapters, async SDK, usage reports, Docker image (`toolgate up`).
 
 Agents should never hold credentials — not the user's OAuth token, not a tenant API key, not anything. Toolgate sits between agents and the tools they call:
 
@@ -107,8 +109,8 @@ if isinstance(result, PendingApproval):
 
 | Module | Purpose |
 | --- | --- |
-| `toolgate.core` | Capability tokens, client assertions + PoP proofs, policy engine, audit chain |
-| `toolgate.server` | Control plane (registry, grants, token endpoint, approvals, revocation, audit) + gate (enforcement pipeline, vault) |
+| `toolgate.core` | Capability tokens, client assertions + PoP proofs, policy engine, audit chain + anchoring verification |
+| `toolgate.server` | Control plane (registry, grants, token endpoint, approvals, revocation, audit) + gate (enforcement pipeline), vault (KMS envelope), notifier (push channels), OAuth broker, Rekor anchoring, SQLite + Postgres stores |
 | `toolgate.sdk` | Agent-side client: token exchange, signed calls, approval flow, typed errors |
 | `toolgate.integrations` | Framework adapters: `anthropic_tools`, `openai_tools`, `langchain_tools` (`pip install 'toolgate-io[langchain]'`) |
 | `toolgate.console` | Operator console (approvals inbox, audit explorer, grants, simulator, reports) served at `/console` |
@@ -154,14 +156,14 @@ Full suite in [`docs/`](docs/README.md): [Quickstart](docs/QUICKSTART.md) · [AP
 - `docs/adr/0004` — approvals bound to args hashes; hash-chained signed audit
 - `docs/adr/0005` — Python as the reference implementation
 
-Roadmap lives in the [issue tracker](../../issues): MCP compatibility, upstream OAuth brokering, Merkle checkpoint anchoring, approvals via Slack/webhooks/CIBA push, dashboard, Postgres scale-out, TypeScript SDK rebuild.
+The 0.4–0.5 roadmap is fully shipped (MCP surface, OAuth brokering, transparency-log anchoring, approval push channels, KMS vault, Postgres scale-out, live LLM demo, red-team suite). Next themes live in the [issue tracker](../../issues) as they open: TypeScript SDK rebuild, dashboard, field-level taint.
 
 ## Development
 
 ```bash
 uv sync
 uv run ruff check src tests
-uv run pytest tests/ -q     # 39 tests: core unit + server integration + SDK-vs-server
+uv run pytest tests/ -q     # 166 tests: unit + integration + adversarial red-team + fake-provider E2E
 uv run toolgate-demo        # the six-act scenario
 uv run toolgate-server      # standalone server (logs only the admin-key fingerprint at boot; set TOOLGATE_ADMIN_KEY explicitly)
 ```

@@ -1,6 +1,6 @@
 # Quickstart
 
-> Toolgate 0.4 · Last updated 2026-09-12 · Audience: application engineers integrating an agent
+> Toolgate 0.5 · Last updated 2026-09-04 · Audience: application engineers integrating an agent
 
 This guide takes you from zero to a policy-gated, human-approvable, fully audited agent tool call in about ten minutes. Everything runs locally.
 
@@ -26,6 +26,8 @@ This guide takes you from zero to a policy-gated, human-approvable, fully audite
 > The raw API path below remains fully supported.
 
 > **0.4:** create per-person operators (`toolgate operators create`) instead of sharing the admin key, open the console at `http://localhost:8484/console`, and try the MCP surface — any MCP client can consume your gated tools at `POST /v1/mcp` with a capability token.
+
+> **0.5:** push parked approvals to Slack/webhooks/email (`toolgate channels`), connect users' own SaaS accounts (`toolgate oauth`, credential mode `oauth_user`), anchor the audit chain in a transparency log (`TOOLGATE_REKOR_URL`), move secret custody to a KMS (`TOOLGATE_VAULT_PROVIDER`), and scale horizontally on Postgres (`TOOLGATE_DB=postgres://…`).
 
 > **Live demo.** `toolgate demo` runs the scripted six-act scenario offline. With `pip install 'toolgate-io[demo]'` and `ANTHROPIC_API_KEY` set, `toolgate demo --live` lets a real Claude model choose every tool call — and adds a prompt-injection act where a hostile page orders exfiltration through an allowed email tool and the taint policy parks it, whatever the model decides.
 
