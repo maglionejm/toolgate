@@ -22,15 +22,17 @@ def _admin_key_fingerprint(admin_key: str) -> str:
 
 
 def _notification_worker(ctx: AppContext) -> None:
-    """Retry loop for approval notifications: due deliveries are attempted with
-    exponential backoff until delivered or exhausted (see notifier.py)."""
+    """Background loop: approval-notification retries (notifier.py) and
+    transparency-log anchoring of new checkpoints (anchor.py)."""
     while True:
         time.sleep(1.0)
         try:
             if ctx.notifier:
                 ctx.notifier.process_due()
+            if ctx.anchor_worker:
+                ctx.anchor_worker.process_pending()
         except Exception as err:  # noqa: BLE001 - the worker must survive anything
-            print(f"[toolgate] notification worker error: {err}", file=sys.stderr)
+            print(f"[toolgate] background worker error: {err}", file=sys.stderr)
 
 
 def main() -> None:

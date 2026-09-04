@@ -55,12 +55,22 @@ def create_app(ctx: AppContext) -> FastAPI:
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:
+        if ctx.anchor_worker:
+            checkpoints = ctx.store.list_checkpoints()
+            anchoring: dict[str, object] = ctx.anchor_worker.status(
+                total=len(checkpoints),
+                anchored=sum(1 for c in checkpoints if c.anchor),
+            )
+        else:
+            anchoring = {"enabled": False}
         return {
             "ok": True,
             "issuer": ctx.config.issuer,
             "control_kid": ctx.control_keys.kid,
             # Aggregate failure telemetry for operator alerting (counts only).
             "auth_failures": dict(ctx.auth_failure_counts),
+            # Transparency-log anchoring state: alert on degraded=true (#12).
+            "anchoring": anchoring,
         }
 
     @app.get("/v1/keys")

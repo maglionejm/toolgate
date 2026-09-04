@@ -415,3 +415,7 @@ class Checkpoint(BaseModel):
     ts: str
     sigKid: str | None = None
     sig: str
+    # Transparency-log evidence ({logId, logIndex, uuid, rootHash, treeSize,
+    # hashes, signedRoot}), attached AFTER signing — additive and excluded from
+    # the signed body, so legacy checkpoint signatures stay valid.
+    anchor: dict[str, Any] | None = None

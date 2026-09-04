@@ -85,11 +85,31 @@ Store exports on WORM/object-lock storage. External Merkle anchoring is tracked 
 | Upstream 401s recorded as `TG_UPSTREAM_ERROR` | Secret rotated upstream but not re-sealed in Toolgate | Re-POST the upstream credential |
 
 
-## R7 — Checkpoints and external anchoring
+## R7 — Proof-grade anchoring and retention
 
-- Checkpoints are cut automatically (every 64 records and on every gate-key rotation); cut one on demand before exports or audits: `curl -X POST $TG/v1/control/audit/checkpoint`.
-- Set `TOOLGATE_ANCHOR_URL` to POST each checkpoint to an external witness (webhook, ticketing system, Rekor relay). Anchored checkpoints make history rewriting detectable even after a gate-key compromise.
-- `toolgate audit export` + `toolgate audit verify --file` is the offline, third-party-verifiable path: it validates hash linkage, signatures, rotation lineage, and every checkpoint root.
+Checkpoints are cut automatically (every 64 records and on every gate-key rotation); cut one on demand before exports or audits: `curl -X POST $TG/v1/control/audit/checkpoint`.
+
+**Transparency-log anchoring (0.5).** Set `TOOLGATE_REKOR_URL` to a Rekor-compatible log; the background worker publishes every checkpoint (hashedrekord over its canonical signed bytes) and persists the returned `{logId, logIndex, uuid, inclusion proof, signed root}` with the checkpoint. Bundles (`GET /v1/control/audit/bundle`, v2) carry the evidence. Monitor `/healthz` → `anchoring`: `degraded: true` means 3+ consecutive checkpoints failed to anchor — alert on it; anchoring resumes automatically when the log is reachable.
+
+**Proof-grade offline verification.** Obtain the log's public key **out-of-band** (never from the server being audited), then:
+
+```bash
+toolgate audit export --out bundle.json
+toolgate audit verify --file bundle.json --jwk gate.jwk --rekor --trust-root log.pem
+```
+
+This validates hash linkage, signatures, rotation lineage, every checkpoint root, every inclusion proof against the pinned log key, and — decisively — that the presented history still matches what was anchored. A rewritten chain re-signed with a **compromised current gate key** passes signature checks but fails here with a divergence report naming the seq. Exit code `2` on any failure.
+
+**WORM retention.** Schedule immutable exports (cron/systemd timer):
+
+```bash
+toolgate audit worm-export --dir /mnt/worm/audit --retention-days 183
+toolgate audit worm-export --s3-bucket acme-audit-worm    # Object Lock COMPLIANCE; pip install 'toolgate-io[s3]'
+```
+
+Filesystem exports are write-once (`O_EXCL`, mode 0444) with a SHA-256 manifest appended to `manifest.jsonl`; S3 exports use Object Lock COMPLIANCE mode — undeletable until the retention date, even by the bucket owner (the bucket must be created with Object Lock enabled). Default retention is 183 days (≥ 6 months).
+
+The legacy `TOOLGATE_ANCHOR_URL` webhook witness still works and can run alongside Rekor anchoring.
 
 ## R8 — Operator lifecycle
 

@@ -669,8 +669,10 @@ def control_router(ctx: AppContext) -> APIRouter:
     ) -> dict[str, Any]:
         """Records + checkpoints in one export. Offline verification needs the
         FULL chain, so tenant filtering applies to `records` only when asked —
-        the default export is complete."""
+        the default export is complete. v2: checkpoints carry their anchor
+        evidence, so bundles verify against a pinned log trust root offline."""
         return {
+            "version": 2,
             "records": [
                 r.model_dump(mode="json", exclude_none=True)
                 for r in ctx.store.list_audit(tenantId)
@@ -685,11 +687,14 @@ def control_router(ctx: AppContext) -> APIRouter:
     async def verify_audit() -> dict[str, Any]:
         v = ctx.audit.verify()
         cp_valid, cp_total = ctx.audit.verify_checkpoints()
+        checkpoints = ctx.store.list_checkpoints()
         out: dict[str, Any] = {
             "valid": v.valid,
             "length": v.length,
             "checkpoints_valid": cp_valid,
             "checkpoints_total": cp_total,
+            # Anchoring coverage: how much of the history is externally pinned.
+            "checkpoints_anchored": sum(1 for c in checkpoints if c.anchor),
         }
         if v.broken_at_seq is not None:
             out["broken_at_seq"] = v.broken_at_seq
