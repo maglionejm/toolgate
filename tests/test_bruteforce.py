@@ -30,7 +30,8 @@ class Env:
         tenant = self._post("/v1/control/tenants", {"name": "T"})["id"]
         user = self._post("/v1/control/users", {"tenantId": tenant, "displayName": "u"})["id"]
         self.agent = self._post(
-            "/v1/control/agents", {"tenantId": tenant, "name": "a", "publicJwk": self.keys.public_jwk}
+            "/v1/control/agents",
+            {"tenantId": tenant, "name": "a", "publicJwk": self.keys.public_jwk},
         )["id"]
         self._post(
             "/v1/control/upstreams",
@@ -128,7 +129,7 @@ def test_spoofed_xff_from_untrusted_peer_ignored() -> None:
 def test_trusted_proxy_xff_honored() -> None:
     env = Env(trusted_proxies=("testclient",))
     # Failures attributed to the forwarded client...
-    for i in range(6):
+    for _i in range(6):
         env.exchange(env.bad_assertion(), headers={"x-forwarded-for": "203.0.113.7"})
     blocked = env.exchange(env.bad_assertion(), headers={"x-forwarded-for": "203.0.113.7"})
     assert blocked.status_code == 429
