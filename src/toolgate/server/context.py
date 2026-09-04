@@ -61,6 +61,10 @@ class ServerConfig:
     anchor_url: str | None = None
     # MCP surface (/v1/mcp): bearer-token auth without PoP proofs (ADR 0009).
     mcp_enabled: bool = True
+    # Taint scope: "txn" (per task token) or "grant" (whole delegation). Grant
+    # scope closes the txn-splitting evasion — a fresh token cannot launder
+    # taint — at the cost of one untrusted read tainting the entire grant.
+    taint_scope: str = "txn"
 
 
 class AuditLog:
@@ -303,6 +307,7 @@ def create_app_context(
         admin_key=admin,
         allow_insecure_upstreams=dev_mode,
         anchor_url=anchor_url or os.environ.get("TOOLGATE_ANCHOR_URL"),
+        taint_scope=os.environ.get("TOOLGATE_TAINT_SCOPE", "txn"),
     )
 
     http = http_client or httpx.AsyncClient(timeout=30.0)
