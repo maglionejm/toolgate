@@ -1,6 +1,6 @@
 # Security Model
 
-> Toolgate 0.4 · Last updated 2026-09-12
+> Toolgate 0.5 · Last updated 2026-09-10
 
 ## Design commitment
 

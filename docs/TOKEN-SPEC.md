@@ -1,6 +1,6 @@
 # Token Specification
 
-> Toolgate 0.4 · Last updated 2026-09-12 · Normative for interoperating implementations
+> Toolgate 0.5 · Last updated 2026-09-10 · Normative for interoperating implementations
 
 Toolgate uses three signed artifacts, all EdDSA (Ed25519) JWS with distinct `typ` headers so they can never be confused for one another.
 
