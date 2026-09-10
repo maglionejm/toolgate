@@ -21,6 +21,9 @@ jobs:
       - run: uv sync --dev
       - run: uv run ruff check src tests
       - run: uv run pytest tests/ -q --ignore=tests/redteam
+      # Spec artifacts stay valid (same check CLAUDE.md lists for local runs).
+      # Pinned: npx @latest in CI is a supply-chain and reproducibility hazard.
+      - run: npx -y @fission-ai/openspec@1.13.0 validate --all
 
   redteam:
     runs-on: ubuntu-latest
