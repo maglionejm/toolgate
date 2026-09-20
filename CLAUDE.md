@@ -17,7 +17,7 @@ uv run pytest -q --ignore=tests/redteam   # what the CI "checks" job runs
 uv run pytest tests/test_postgres.py -q   # needs TOOLGATE_TEST_PG_DSN (postgres:16); skips otherwise
 uv run toolgate demo                      # scripted six-act demo (offline, hermetic)
 uv run toolgate demo --live               # real Claude model + injection act (ANTHROPIC_API_KEY, [demo] extra)
-npx -y @fission-ai/openspec@latest validate --all
+npx -y @fission-ai/openspec@latest validate --all   # also runs in CI (checks job, pinned there)
 ```
 
 ## Layout
@@ -41,6 +41,14 @@ npx -y @fission-ai/openspec@latest validate --all
 - Releases are milestone/theme/security only — do not tag per-PR. A GitHub
   release auto-publishes to PyPI (Trusted Publishing/OIDC) and ghcr
   (multi-arch).
+- Security-sensitive code (`core/token.py`, `core/assertion.py`,
+  `core/audit.py`, the `server/gate.py` pipeline): every behavior change ships
+  with tests, including negative cases (theft, replay, tamper). Wire-format
+  changes (camelCase fields, token claims, endpoint shapes) additionally
+  require an ADR in `docs/adr/`.
+- `server/hooks.py` endpoints are deliberately reachable without operator auth
+  (Slack interactivity, email magic links, OAuth callbacks) — treat any change
+  there as security-sensitive.
 
 ## Hard-won rules
 
