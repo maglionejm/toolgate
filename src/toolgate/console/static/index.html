@@ -29,7 +29,8 @@
 
 <main class="app" id="app" hidden>
   <div class="tabs" id="tabs">
-    <button data-view="approvals" class="active">Approvals</button>
+    <button data-view="dashboard" class="active">Dashboard</button>
+    <button data-view="approvals">Approvals</button>
     <button data-view="audit">Audit</button>
     <button data-view="grants">Grants</button>
     <button data-view="simulator">Simulator</button>
@@ -43,7 +44,37 @@
     <select id="tenant" class="mono"></select>
   </div>
 
-  <section class="view" id="view-approvals">
+  <section class="view" id="view-dashboard">
+    <div class="row-between">
+      <p class="panel-label">operational status · deployment + tenant</p>
+      <span class="hint mono" id="dash-updated"></span>
+    </div>
+    <div class="status-strip" id="dash-strip"></div>
+
+    <div class="row-between">
+      <p class="panel-label">activity · last <span id="dash-window-label">24h</span></p>
+      <div class="seg mono" id="dash-window">
+        <button data-hours="1">1h</button>
+        <button data-hours="24" class="active">24h</button>
+        <button data-hours="168">7d</button>
+      </div>
+    </div>
+    <div class="tiles" id="dash-tiles"></div>
+    <div class="sparks" id="dash-sparks"></div>
+
+    <div class="dash-cols">
+      <div>
+        <p class="panel-label">top tools · calls in window</p>
+        <div class="bars" id="dash-tools"></div>
+      </div>
+      <div>
+        <p class="panel-label">budget utilization · all grants</p>
+        <div class="bars" id="dash-budgets"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="view" id="view-approvals" hidden>
     <p class="panel-label">pending approvals · decisions bind to the exact arguments shown</p>
     <div id="approvals-list" class="cards"></div>
   </section>

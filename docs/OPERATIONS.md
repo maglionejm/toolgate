@@ -91,7 +91,7 @@ Store exports on WORM/object-lock storage. External Merkle anchoring is tracked 
 
 Checkpoints are cut automatically (every 64 records and on every gate-key rotation); cut one on demand before exports or audits: `curl -X POST $TG/v1/control/audit/checkpoint`.
 
-**Transparency-log anchoring (0.5).** Set `TOOLGATE_REKOR_URL` to a Rekor-compatible log; the background worker publishes every checkpoint (hashedrekord over its canonical signed bytes) and persists the returned `{logId, logIndex, uuid, inclusion proof, signed root}` with the checkpoint. Bundles (`GET /v1/control/audit/bundle`, v2) carry the evidence. Monitor `/healthz` → `anchoring`: `degraded: true` means 3+ consecutive checkpoints failed to anchor — alert on it; anchoring resumes automatically when the log is reachable.
+**Transparency-log anchoring (0.5).** Set `TOOLGATE_REKOR_URL` to a Rekor-compatible log; the background worker publishes every checkpoint (hashedrekord over its canonical signed bytes) and persists the returned `{logId, logIndex, uuid, inclusion proof, signed root}` with the checkpoint. Bundles (`GET /v1/control/audit/bundle`, v2) carry the evidence. Monitor `/healthz` → `anchoring`: `degraded: true` means 3+ consecutive checkpoints failed to anchor — alert on it; anchoring resumes automatically when the log is reachable. The console's Dashboard tab shows the same state to operators as an `ANCHORING DEGRADED · n/m anchored` chip (from `GET /v1/control/dashboard`, auditor-gated); keep `/healthz` as the alerting source — the dashboard is the human-facing view of the same counters, not a replacement for monitoring.
 
 **Proof-grade offline verification.** Obtain the log's public key **out-of-band** (never from the server being audited), then:
 

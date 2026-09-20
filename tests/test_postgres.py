@@ -294,6 +294,74 @@ def test_sqlite_to_postgres_migration_preserves_chain(tmp_path: Any) -> None:
     assert refs and migrated.ctx.vault.open(migrated.ctx.store.get_secret(refs[0])) == "k"
 
 
+# --- dashboard parity (#73, spec: dashboard / store backend parity) ---------------------
+
+
+def test_delivery_counts_identical_on_sqlite_and_postgres(tmp_path: Any) -> None:
+    """The dashboard's one new store read touches real columns only, so
+    PostgresStore inherits the SQLite SQL unchanged and must return the same
+    status → count map for identical rows, scoped to the tenant asked for."""
+    from datetime import UTC, datetime
+
+    from toolgate.core import Delivery
+
+    sqlite_ctx = create_app_context(
+        db_path=str(tmp_path / "parity.db"), public_url=BASE, http_client=_mock_http()
+    )
+    pg = Instance()
+    now = datetime.now(UTC).isoformat()
+
+    def row(i: int, tenant: str, status: str) -> Delivery:
+        return Delivery(
+            id=f"dlv_{i}", tenantId=tenant, channelId="chn_1", channelType="webhook",
+            approvalId="apr_1", event="parked", status=status,  # type: ignore[arg-type]
+            nextAttemptAt=now, createdAt=now, updatedAt=now,
+        )
+
+    plan = [("delivered", 3), ("failed", 1), ("pending", 2)]
+    for store in (sqlite_ctx.store, pg.ctx.store):
+        i = 0
+        for status, count in plan:
+            for _ in range(count):
+                store.put_delivery(row(i, "tnt_a", status))
+                i += 1
+        store.put_delivery(row(99, "tnt_b", "failed"))  # another tenant: must not bleed in
+
+    expected = {"delivered": 3, "failed": 1, "pending": 2}
+    assert sqlite_ctx.store.delivery_counts("tnt_a") == expected
+    assert pg.ctx.store.delivery_counts("tnt_a") == expected
+    assert sqlite_ctx.store.delivery_counts("tnt_b") == {"failed": 1}
+    assert pg.ctx.store.delivery_counts("tnt_b") == {"failed": 1}
+    assert sqlite_ctx.store.delivery_counts("tnt_none") == {}
+    assert pg.ctx.store.delivery_counts("tnt_none") == {}
+
+
+def test_dashboard_endpoint_on_postgres() -> None:
+    """The dashboard aggregates over the Postgres store exactly as over SQLite:
+    one executed call is one in-window record, one charged grant, one tool."""
+    inst = Instance()
+    agent, keys, grant = _seed(inst)
+    result = inst.sdk(agent, keys, grant).call("crm", "read", {"contactId": "d1"})
+    assert result.status == "executed"
+    tenant = inst.client.get("/v1/control/tenants", headers=inst.admin).json()[0]["id"]
+
+    res = inst.client.get(
+        "/v1/control/dashboard", headers=inst.admin, params={"tenantId": tenant, "hours": 24}
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["tenantId"] == tenant
+    assert body["window"]["hours"] == 24 and body["window"]["bucketSeconds"] == 1800
+    assert len(body["series"]) == 48
+    assert body["totals"]["calls"] == 1 and body["totals"]["executed"] == 1
+    assert body["totals"]["costUnits"] == 1 and body["totals"]["activeAgents"] == 1
+    assert body["topTools"] == [{"tool": "crm.read", "calls": 1, "denied": 0}]
+    budgets = [(b["grantId"], b["spentUnits"], b["maxUnits"]) for b in body["budgets"]]
+    assert budgets == [(grant, 1, 20)]
+    assert body["approvals"] == {"pending": 0, "oldestPendingAgeSeconds": None}
+    assert body["operational"]["deliveries"] == {"pending": 0, "delivered": 0, "failed": 0}
+
+
 # --- store contract ---------------------------------------------------------------------
 
 

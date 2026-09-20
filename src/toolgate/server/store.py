@@ -389,6 +389,15 @@ class Store:
         ).fetchall()
         return [Delivery.model_validate(json.loads(r[0])) for r in rows]
 
+    def delivery_counts(self, tenant_id: str) -> dict[str, int]:
+        """Notification delivery counts by status for a tenant (dashboard read).
+        Real columns only — the Postgres facade inherits this unchanged."""
+        rows = self.db.execute(
+            "SELECT status, COUNT(*) FROM deliveries WHERE tenant_id = ? GROUP BY status",
+            (tenant_id,),
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     # -- magic-link tokens -------------------------------------------------------------
 
     def put_link_token(self, token_hash: str, doc: dict[str, Any]) -> None:
