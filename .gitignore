@@ -12,6 +12,7 @@ dist/
 *.db-wal
 *.db-shm
 *.db-journal
+.toolgate.env
 *.sqlite
 .DS_Store
 coverage/
