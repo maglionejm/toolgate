@@ -1,6 +1,6 @@
 # API Reference
 
-> Toolgate 0.4 · Last updated 2026-09-12 · Base URL: your deployment (`TOOLGATE_PUBLIC_URL`)
+> Toolgate 0.5 · Last updated 2026-09-10 · Base URL: your deployment (`TOOLGATE_PUBLIC_URL`)
 
 Three API surfaces with distinct authentication:
 

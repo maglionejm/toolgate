@@ -1,6 +1,6 @@
 # CLI Reference
 
-> Toolgate 0.4 · `pip install toolgate-io` (or `uvx --from toolgate-io toolgate`) · the CLI is a pure client of the control-plane API
+> Toolgate 0.5 · `pip install toolgate-io` (or `uvx --from toolgate-io toolgate`) · the CLI is a pure client of the control-plane API
 
 ```
 toolgate [--profile NAME] [--json] COMMAND
