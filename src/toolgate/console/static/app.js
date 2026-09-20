@@ -48,8 +48,9 @@ $("logout").addEventListener("click", () => { sessionStorage.removeItem("tgKey")
 
 /* ---------- tenant + tabs ---------- */
 
-let view = "approvals";
+let view = "dashboard";
 let pollTimer = null;
+let dashHours = 24;
 
 async function loadTenants() {
   const tenants = await api("/v1/control/tenants");
@@ -72,7 +73,10 @@ function tenantId() { return $("tenant").value; }
 
 async function render() {
   clearInterval(pollTimer);
-  if (view === "approvals") {
+  if (view === "dashboard") {
+    await renderDashboard();
+    pollTimer = setInterval(renderDashboard, 30000);
+  } else if (view === "approvals") {
     await renderApprovals();
     pollTimer = setInterval(renderApprovals, 4000);
   } else if (view === "audit") await renderAudit();
@@ -82,6 +86,139 @@ async function render() {
   else if (view === "channels") await renderChannels();
   else if (view === "connections") await renderConnections();
 }
+
+/* ---------- dashboard ---------- */
+
+const fmtNum = (n) => n.toLocaleString("en-US");
+
+function fmtAge(s) {
+  if (s === null || s === undefined) return "—";
+  if (s >= 3600) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+  if (s >= 60) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+/* Inline SVG sparkline over 48 buckets: viewBox 0 0 480 60, point i at bucket
+   center x = i*10+5, y = 56 - (v/max)*50 with max clamped to 1 (all-zeros ⇒
+   flat baseline, no division by zero). Area path and line are separate so the
+   closing edges are fill-only, never stroked. */
+function spark(vals, cls) {
+  const max = Math.max(1, ...vals);
+  const pts = vals.map((v, i) => `${i * 10 + 5},${Math.round((56 - (v / max) * 50) * 10) / 10}`);
+  return `<svg class="spark ${cls}" viewBox="0 0 480 60" preserveAspectRatio="none">
+    <path class="spark-fill" d="M5,56 L${pts.join(" L")} L475,56 Z"/>
+    <polyline class="spark-line" points="${pts.join(" ")}"/>
+  </svg>`;
+}
+
+function dashStrip(d) {
+  const a = d.operational.anchoring;
+  const anchor = !a.enabled
+    ? `<span class="badge mono">ANCHORING OFF · ${a.anchored}/${a.total} anchored</span>`
+    : a.degraded
+      ? `<span class="badge bad mono">ANCHORING DEGRADED · ${a.anchored}/${a.total} anchored</span>`
+      : `<span class="badge ok mono">ANCHORING ${a.anchored}/${a.total}</span>`;
+  const dl = d.operational.deliveries;
+  const deliveries = dl.failed > 0
+    ? `<span class="badge bad mono">DELIVERIES ${dl.failed} FAILED · ${dl.delivered} delivered · ${dl.pending} pending</span>`
+    : `<span class="badge ok mono">DELIVERIES ${dl.delivered} delivered · ${dl.pending} pending</span>`;
+  const reasons = Object.entries(d.operational.authFailures).sort(([x], [y]) => (x < y ? -1 : 1));
+  const authTotal = reasons.reduce((sum, [, n]) => sum + n, 0);
+  const auth = authTotal > 0
+    ? `<span class="badge warn mono">AUTH FAILURES ${authTotal} · ${reasons.map(([k, n]) => `${esc(k)} ${n}`).join(" · ")}</span>`
+    : `<span class="badge mono">AUTH FAILURES 0</span>`;
+  const ap = d.approvals;
+  const approvals = ap.pending > 0
+    ? `<button class="badge warn mono" data-goto="approvals">APPROVALS ${ap.pending} pending · oldest ${esc(fmtAge(ap.oldestPendingAgeSeconds))}</button>`
+    : `<button class="badge mono" data-goto="approvals">APPROVALS none pending</button>`;
+  return anchor + deliveries + auth + approvals;
+}
+
+async function renderDashboard() {
+  if (!tenantId()) return;
+  const strip = $("dash-strip");
+  if (!strip.innerHTML) strip.innerHTML = `<span class="badge mono">loading…</span>`;
+  let d;
+  try {
+    d = await api(`/v1/control/dashboard?tenantId=${tenantId()}&hours=${dashHours}`);
+  } catch (err) {
+    // Stale tiles/charts an operator is reading beat a wipe; the poll retries.
+    strip.innerHTML = `<span class="badge bad mono">FETCH FAILED · ${esc(err.code || "error")}: ${esc(err.message)}</span>`;
+    return;
+  }
+
+  strip.innerHTML = dashStrip(d);
+  $("dash-updated").textContent = `updated ${d.window.to.slice(11, 19)}`;
+  $("dash-window-label").textContent = d.window.hours === 168 ? "7d" : `${d.window.hours}h`;
+
+  const t = d.totals;
+  $("dash-tiles").innerHTML = [
+    ["calls", t.calls, ""],
+    ["denied", t.denied, t.denied > 0 ? "fx-deny" : ""],
+    ["parked", t.parked, ""],
+    ["errors", t.errors, t.errors > 0 ? "fx-deny" : ""],
+    ["cost units", t.costUnits, ""],
+    ["active agents", t.activeAgents, ""],
+  ]
+    .map(([k, v, cls]) => `<div class="tile"><b${cls ? ` class="${cls}"` : ""}>${fmtNum(v)}</b><span>${k}</span></div>`)
+    .join("");
+
+  $("dash-sparks").innerHTML = ["executed", "denied", "parked", "errors"]
+    .map(
+      (k) => `<div class="spark-row">
+        <span class="spark-label mono">${k}</span>
+        <span class="spark-total mono">${fmtNum(t[k])}</span>
+        ${spark(d.series.map((b) => b[k]), `s-${k}`)}
+      </div>`
+    )
+    .join("") + (t.calls === 0 ? `<p class="empty">— no gate calls in this window —</p>` : "");
+
+  const maxCalls = Math.max(1, d.topTools[0]?.calls ?? 0);
+  $("dash-tools").innerHTML = d.topTools
+    .map((x) => {
+      const fill = Math.round((x.calls / maxCalls) * 100);
+      const den = x.calls > 0 ? Math.round((x.denied / x.calls) * 100) : 0;
+      return `<div class="bar-row mono">
+        <span class="bar-label">${esc(x.tool)}</span>
+        <span class="bar-val">${x.denied > 0 ? `${x.calls} · ${x.denied} denied` : x.calls}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${fill}%"><div class="bar-seg-denied" style="width:${den}%"></div></div></div>
+      </div>`;
+    })
+    .join("") || `<p class="empty">no tool calls in window</p>`;
+
+  $("dash-budgets").innerHTML = d.budgets
+    .map((b) => {
+      const util = b.maxUnits > 0 ? b.spentUnits / b.maxUnits : 0;
+      const pct = Math.round(util * 100);
+      let fillCls = "";
+      let val = `${b.spentUnits}/${b.maxUnits} · ${pct}%`;
+      if (util >= 1) { fillCls = " over"; val += " · EXHAUSTED"; }
+      else if (util >= 0.8) { fillCls = " warn"; val += " · NEAR LIMIT"; }
+      const revoked = b.status === "revoked";
+      if (revoked) val += " · revoked";
+      return `<div class="bar-row mono${revoked ? " revoked" : ""}">
+        <span class="bar-label">${esc(b.grantId)} · ${esc(b.agentId)}</span>
+        <span class="bar-val">${val}</span>
+        <div class="bar-track"><div class="bar-fill${fillCls}" style="width:${Math.min(100, pct)}%"></div></div>
+      </div>`;
+    })
+    .join("") || `<p class="empty">no grants — toolgate grants create</p>`;
+}
+
+$("dash-window").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-hours]");
+  if (!btn) return;
+  dashHours = Number(btn.dataset.hours);
+  document.querySelectorAll("#dash-window button").forEach((b) => b.classList.toggle("active", b === btn));
+  render(); // immediate re-fetch; re-arms the 30 s poll
+});
+
+$("dash-strip").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-goto]");
+  if (!btn) return;
+  // Same code path as clicking the tab button, so tab state stays consistent.
+  document.querySelector(`#tabs button[data-view="${btn.dataset.goto}"]`)?.click();
+});
 
 /* ---------- approvals inbox ---------- */
 
