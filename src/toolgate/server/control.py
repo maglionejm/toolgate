@@ -50,6 +50,7 @@ from toolgate.core import (
 
 from .approvals import decide_approval as _decide_approval_shared
 from .context import AppContext
+from .dashboard import build_dashboard
 
 # Cloud instance-metadata endpoints are never a legitimate upstream; they are
 # the classic SSRF credential-exfiltration target, so they are refused outright.
@@ -933,6 +934,17 @@ def control_router(ctx: AppContext) -> APIRouter:
             "byTool": [{"tool": k, **v} for k, v in sorted(by_tool.items())],
             "approvals": approvals,
         }
+
+    @router.get("/dashboard", dependencies=auditor_dep)
+    async def dashboard(
+        tenantId: Annotated[str, Query()],
+        hours: Annotated[int, Query()] = 24,
+    ) -> dict[str, Any]:
+        """Operator dashboard: a read-only projection over the same signed
+        records that back /reports. Appends nothing; out-of-range `hours` is
+        clamped (not rejected) inside build_dashboard."""
+        _require_tenant(ctx, tenantId)
+        return build_dashboard(ctx, tenantId, hours)
 
     @router.post("/operators", status_code=201, dependencies=owner_dep)
     async def create_operator(body: CreateOperator, request: Request) -> dict[str, Any]:
