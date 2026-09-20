@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from toolgate.core import (
+    ApprovalRequest,
     AuditAction,
     AuditActor,
     AuditDecision,
@@ -98,7 +99,13 @@ class Env:
             },
         )["id"]
 
-    def sdk(self, grant_id: str | None = None) -> ToolgateClient:
+    def sdk(
+        self,
+        grant_id: str | None = None,
+        *,
+        agent_id: str | None = None,
+        private_jwk: dict[str, Any] | None = None,
+    ) -> ToolgateClient:
         outer = self
 
         class Bridge(httpx.Client):
@@ -107,8 +114,8 @@ class Env:
 
         return ToolgateClient(
             base_url=BASE,
-            agent_id=self.agent,
-            agent_private_jwk=self.agent_keys.private_jwk,
+            agent_id=agent_id or self.agent,
+            agent_private_jwk=private_jwk or self.agent_keys.private_jwk,
             grant_id=grant_id or self.grant,
             http_client=Bridge(),
         )
@@ -140,7 +147,11 @@ def _seed_activity(env: Env) -> None:
 
 
 def _gate_record(
-    env: Env, ts: datetime, status: str = "executed", cost: int | None = 1
+    env: Env,
+    ts: datetime,
+    status: str = "executed",
+    cost: int | None = 1,
+    tool: str = "read_contact",
 ) -> None:
     """Append a gate-call audit record with a controlled timestamp."""
     env.ctx.audit.record(
@@ -152,7 +163,7 @@ def _gate_record(
                 agentId="agt_test", userId="usr_test", grantId="grt_test", tokenJti="-"
             ),
             action=AuditAction(
-                callId=new_id("call"), upstream="crm", tool="read_contact", argsHash="0" * 64
+                callId=new_id("call"), upstream="crm", tool=tool, argsHash="0" * 64
             ),
             decision=AuditDecision(effect="allow", source="rule", reason="test"),
             result=AuditResult(
@@ -347,3 +358,252 @@ def test_hours_clamping(env: Env) -> None:
     low = env.dashboard(hours=0)
     assert low["window"]["hours"] == 1
     assert low["window"]["bucketSeconds"] == 75
+    negative = env.dashboard(hours=-5)
+    assert negative["window"]["hours"] == 1
+
+
+# --- adversarial: cross-tenant isolation across every dashboard section ------------------
+
+
+def _provision_busy_tenant(env: Env) -> dict[str, Any]:
+    """A second, busier tenant with its own agent, grants, parked approval, and
+    delivery rows — everything a leak could surface through."""
+    keys = generate_ed25519_key_pair()
+    tenant = env._post("/v1/control/tenants", {"name": "Busy"})["id"]
+    user = env._post("/v1/control/users", {"tenantId": tenant, "displayName": "Eve"})["id"]
+    agent = env._post(
+        "/v1/control/agents", {"tenantId": tenant, "name": "b", "publicJwk": keys.public_jwk}
+    )["id"]
+    env._post(
+        "/v1/control/upstreams",
+        {
+            "tenantId": tenant,
+            "name": "billing",
+            "baseUrl": "https://billing.internal",
+            "credential": {"mode": "bearer", "secret": "k"},
+            "tools": [
+                {"name": "charge", "costUnits": 3},
+                {"name": "refund", "sideEffecting": True, "costUnits": 1},
+            ],
+        },
+    )
+    policy = env._post(
+        "/v1/control/policies",
+        {
+            "tenantId": tenant,
+            "name": "p2",
+            "rules": [
+                {"id": "human-refund", "effect": "require_approval",
+                 "match": {"tool": "refund"}},
+                {"id": "ok", "effect": "allow", "match": {}},
+            ],
+        },
+    )["id"]
+    grant = env._post(
+        "/v1/control/grants",
+        {
+            "tenantId": tenant,
+            "userId": user,
+            "agentId": agent,
+            "policyId": policy,
+            "authorization": [{"upstream": "billing", "tools": ["*"]}],
+            "budgetMaxUnits": 100,
+        },
+    )["id"]
+    sdk = env.sdk(grant, agent_id=agent, private_jwk=keys.private_jwk)
+    for i in range(8):
+        sdk.call("billing", "charge", {"invoice": i})
+    parked = sdk.call("billing", "refund", {"invoice": 0})
+    assert isinstance(parked, PendingApproval)
+    now = datetime.now(UTC).isoformat()
+    for i, status in enumerate(("delivered", "delivered", "failed")):
+        env.ctx.store.put_delivery(
+            Delivery(
+                id=f"dlv_busy_{i}", tenantId=tenant, channelId="chn_b",
+                channelType="webhook", approvalId=parked.approval_id, event="parked",
+                status=status,  # type: ignore[arg-type]
+                nextAttemptAt=now, createdAt=now, updatedAt=now,
+            )
+        )
+    return {"tenant": tenant, "agent": agent, "grant": grant}
+
+
+def test_busier_tenant_never_leaks_into_quiet_tenant(env: Env) -> None:
+    busy = _provision_busy_tenant(env)
+    env.sdk().call("crm", "read_contact", {"id": "c1"})  # one call so A is non-empty
+
+    a = env.dashboard()
+    assert a["totals"] == {
+        "calls": 1, "executed": 1, "denied": 0, "parked": 0, "errors": 0,
+        "costUnits": 1, "activeAgents": 1,
+    }
+    assert a["topTools"] == [{"tool": "crm.read_contact", "calls": 1, "denied": 0}]
+    assert all(not t["tool"].startswith("billing.") for t in a["topTools"])
+    assert [b["grantId"] for b in a["budgets"]] == [env.grant]
+    assert busy["grant"] not in {b["grantId"] for b in a["budgets"]}
+    assert busy["agent"] not in {b["agentId"] for b in a["budgets"]}
+    assert a["approvals"] == {"pending": 0, "oldestPendingAgeSeconds": None}
+    assert a["operational"]["deliveries"] == {"pending": 0, "delivered": 0, "failed": 0}
+
+    b = env.dashboard(tenant=busy["tenant"])
+    assert b["totals"]["calls"] == 9
+    assert b["totals"]["parked"] == 1
+    assert b["totals"]["costUnits"] == 24
+    assert b["approvals"]["pending"] == 1
+    assert b["operational"]["deliveries"] == {"pending": 0, "delivered": 2, "failed": 1}
+
+
+# --- adversarial: role gating with real operator keys -------------------------------------
+
+
+def test_auditor_operator_key_reads_dashboard_but_disabled_key_cannot(env: Env) -> None:
+    created = env._post("/v1/control/operators", {"name": "aud", "role": "auditor"})
+    headers = {"x-toolgate-operator-key": created["key"]}
+
+    ok = env.client.get(
+        "/v1/control/dashboard", headers=headers, params={"tenantId": env.tenant}
+    )
+    assert ok.status_code == 200
+    assert ok.json()["tenantId"] == env.tenant
+
+    # auditor is read-only: an owner-level mutation with the same key is refused.
+    mutate = env.client.post("/v1/control/tenants", headers=headers, json={"name": "X"})
+    assert mutate.status_code == 403
+    assert mutate.json()["error"]["code"] == "TG_DENIED"
+
+    env._post(f"/v1/control/operators/{created['operator']['id']}/disable", {})
+    revoked = env.client.get(
+        "/v1/control/dashboard", headers=headers, params={"tenantId": env.tenant}
+    )
+    assert revoked.status_code == 401
+    assert revoked.json()["error"]["code"] == "TG_TOKEN_INVALID"
+
+
+# --- adversarial: malformed input ---------------------------------------------------------
+
+
+def test_malformed_hours_is_400_envelope_not_500(env: Env) -> None:
+    bad = env.client.get(
+        "/v1/control/dashboard",
+        headers=env.admin,
+        params={"tenantId": env.tenant, "hours": "abc"},
+    )
+    assert bad.status_code == 400
+    assert bad.json()["error"]["code"] == "TG_VALIDATION"
+
+    fractional = env.client.get(
+        "/v1/control/dashboard",
+        headers=env.admin,
+        params={"tenantId": env.tenant, "hours": "1.5"},
+    )
+    assert fractional.status_code == 400
+    assert fractional.json()["error"]["code"] == "TG_VALIDATION"
+
+
+def test_missing_tenant_id_is_400_envelope(env: Env) -> None:
+    missing = env.client.get("/v1/control/dashboard", headers=env.admin)
+    assert missing.status_code == 400
+    body = missing.json()
+    assert body["error"]["code"] == "TG_VALIDATION"
+    assert any("tenantId" in issue for issue in body["error"]["details"]["issues"])
+
+
+# --- adversarial: record/grant/approval robustness ----------------------------------------
+
+
+def test_records_missing_latency_and_cost_do_not_break_totals(env: Env) -> None:
+    now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    _gate_record(env, now - timedelta(minutes=5), "executed", cost=None)
+    _gate_record(env, now - timedelta(minutes=4), "error", cost=None)
+    body = build_dashboard(env.ctx, env.tenant, 24, now=now)
+    assert body["totals"]["calls"] == 2
+    assert body["totals"]["executed"] == 1
+    assert body["totals"]["errors"] == 1
+    assert body["totals"]["costUnits"] == 0  # absent costUnits counts as 0, not a crash
+
+
+def test_budget_exhausted_and_revoked_grants_still_listed(env: Env) -> None:
+    tight = env.make_grant(budget=2)
+    sdk = env.sdk(tight)
+    sdk.call("crm", "read_contact", {"id": "1"})
+    sdk.call("crm", "read_contact", {"id": "2"})  # spent == max: utilization exactly 1.0
+    env._post(f"/v1/control/grants/{env.grant}/revoke", {})
+
+    budgets = env.dashboard()["budgets"]
+    by_id = {b["grantId"]: b for b in budgets}
+    assert by_id[tight]["spentUnits"] == by_id[tight]["maxUnits"] == 2
+    assert budgets[0]["grantId"] == tight  # utilization 1.0 sorts first
+    assert by_id[env.grant]["status"] == "revoked"  # revoked grants stay visible
+
+
+def test_expired_but_pending_approval_age_is_non_negative(env: Env) -> None:
+    now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    env.ctx.store.put_approval(
+        ApprovalRequest(
+            id="apr_stale", tenantId=env.tenant, callId=new_id("call"),
+            grantId=env.grant, agentId=env.agent, userId=env.user,
+            upstream="crm", tool="wire_money", args={"amount": 1},
+            status="pending",
+            requestedAt=(now - timedelta(hours=2)).isoformat(),
+            expiresAt=(now - timedelta(hours=1)).isoformat(),  # expired yet still pending
+        )
+    )
+    body = build_dashboard(env.ctx, env.tenant, 24, now=now)
+    assert body["approvals"]["pending"] == 1
+    assert body["approvals"]["oldestPendingAgeSeconds"] == 7200
+
+
+def test_top_tools_truncated_to_ten_and_sorted(env: Env) -> None:
+    now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    for i in range(12):
+        for _ in range(i + 1):
+            _gate_record(env, now - timedelta(minutes=1), tool=f"t{i:02d}")
+    top = build_dashboard(env.ctx, env.tenant, 24, now=now)["topTools"]
+    assert len(top) == 10
+    assert top[0] == {"tool": "crm.t11", "calls": 12, "denied": 0}
+    assert [t["calls"] for t in top] == sorted((t["calls"] for t in top), reverse=True)
+    assert {"crm.t00", "crm.t01"}.isdisjoint({t["tool"] for t in top})
+
+
+# --- adversarial: determinism and read-only guarantees ------------------------------------
+
+
+def test_identical_payloads_and_zero_state_mutation(env: Env) -> None:
+    _seed_activity(env)
+    now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=UTC)
+    tables = [
+        r[0]
+        for r in env.ctx.store.db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    ]
+
+    def row_counts() -> dict[str, int]:
+        return {
+            t: env.ctx.store.db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+            for t in tables
+        }
+
+    before_counts = row_counts()
+    before_last = env.ctx.store.last_audit()
+    first = build_dashboard(env.ctx, env.tenant, 24, now=now)
+    second = build_dashboard(env.ctx, env.tenant, 24, now=now)
+    assert first == second  # fully deterministic under an injected now
+    assert row_counts() == before_counts  # no table in the store changed at all
+    assert env.ctx.store.last_audit() == before_last  # chain head untouched
+
+
+def test_error_paths_append_no_audit_records(env: Env) -> None:
+    before = len(env.ctx.store.list_audit())
+    env.client.get(
+        "/v1/control/dashboard", headers=env.admin, params={"tenantId": "tnt_missing"}
+    )
+    env.client.get(
+        "/v1/control/dashboard",
+        headers=env.admin,
+        params={"tenantId": env.tenant, "hours": "abc"},
+    )
+    env.client.get("/v1/control/dashboard", params={"tenantId": env.tenant})  # unauthenticated
+    chain = env.ctx.store.list_audit()
+    assert len(chain) == before
+    assert all("dashboard" not in r.action.tool for r in chain)
