@@ -53,9 +53,11 @@ npx -y @fission-ai/openspec@latest validate --all   # also runs in CI (checks jo
 ## Hard-won rules
 
 - **Never `git add -A` without excluding runtime state.** A local server
-  creates `toolgate.db*` in the repo root; a `.db-wal` file once leaked
-  private keys into a public commit. Stage explicit paths, or exclude with
-  `':!*.db' ':!*.db-wal' ':!*.db-shm'`.
+  creates `toolgate.db*` in the repo root and `toolgate up` writes
+  `.toolgate.env` (generated master + admin keys) next to it; a `.db-wal`
+  file once leaked private keys into a public commit and a `.toolgate.env`
+  was tracked for two weeks. Both are gitignored now; still stage explicit
+  paths, or exclude with `':!*.db' ':!*.db-wal' ':!*.db-shm' ':!.toolgate.env'`.
 - **Run ruff unpiped before every commit** — piped exit codes have let lint
   failures reach CI twice.
 - gitleaks scans history: never quote secret-looking prose in comments
