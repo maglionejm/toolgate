@@ -282,6 +282,106 @@ Real SaaS tools authorize users, not tenants. Toolgate custodies each user's OAu
 - `POST /v1/control/connections/{id}/revoke` (`approver`) — instant: sealed tokens are deleted; the next dependent call refuses.
 - Upstream credential mode `oauth_user` — `{"credential": {"mode": "oauth_user", "providerAppId": "oap_…"}}`. At call time the gate resolves the connection for the grant's `userId`, refreshes expired access tokens transparently (per-connection lock), and injects the live bearer. Failure taxonomy: `TG_CONNECTION_REQUIRED` (403, no active connection — the upstream is never invoked) and `TG_CONNECTION_FAILED` (502, refresh/exchange failure); both are audited.
 
+## Added in 0.6 (unreleased)
+
+### Operator dashboard
+
+`GET /v1/control/dashboard?tenantId=<tnt_…>&hours=<int>` (`auditor`+; operator key or break-glass admin key, like `/reports`) — a read-only, tenant-scoped operational projection over state the system already keeps: the signed audit chain, live grant budgets, pending approvals, checkpoints, notification delivery rows, and the in-memory auth-failure telemetry. It backs the console's **Dashboard** tab (first tab, default view after sign-in; polls every 30 s). No new counters or write paths: serving it inserts, updates, or deletes nothing and appends no audit record.
+
+Parameters:
+
+- `tenantId` (required) — unknown tenant → `404 TG_NOT_FOUND` before any aggregation.
+- `hours` (optional integer, default `24`) — lookback window. Out-of-range integers are **clamped** to `[1, 168]`, not rejected; the effective value is echoed in `window.hours`. A non-integer value → `400 TG_VALIDATION`.
+
+Response (`200`, all fields camelCase):
+
+```jsonc
+{
+  "tenantId": "tnt_abc",
+  "window": {
+    "hours": 24,                              // effective (post-clamp) window
+    "from": "2026-09-19T14:00:00+00:00",      // to − hours, ISO-8601 UTC
+    "to": "2026-09-20T14:00:00+00:00",        // request time, ISO-8601 UTC
+    "bucketSeconds": 1800                     // hours * 75 (window / 48)
+  },
+
+  "totals": {                                 // whole-window headline numbers
+    "calls": 143,                             // int — all gate-call audit records in window
+    "executed": 120,                          // int — result.status == "executed"
+    "denied": 12,                             // int — result.status == "denied"
+    "parked": 8,                              // int — result.status == "pending_approval"
+    "errors": 3,                              // int — result.status == "error"
+    "costUnits": 456,                         // int — sum of result.costUnits over executed records
+    "activeAgents": 4                         // int — distinct actor.agentId in window
+  },
+
+  "series": [                                 // ALWAYS exactly 48 buckets, oldest → newest
+    {
+      "start": "2026-09-19T14:00:00+00:00",   // bucket start, ISO-8601 UTC
+      "executed": 5,                          // int
+      "denied": 1,                            // int
+      "parked": 0,                            // int
+      "errors": 0                             // int
+    }
+    // ... 47 more; empty buckets are present with all-zero counts
+  ],
+
+  "topTools": [                               // at most 10 entries
+    {
+      "tool": "crm.read_contact",             // "{upstream}.{tool}" (reports byTool key format)
+      "calls": 40,                            // int — all records for the tool in window
+      "denied": 3                             // int — denied records for the tool in window
+    }
+  ],
+
+  "budgets": [                                // ALL grants of the tenant (durable state, not windowed)
+    {
+      "grantId": "gnt_1",
+      "agentId": "agt_1",
+      "spentUnits": 40,                       // int — live budget row (store merges it)
+      "maxUnits": 100,                        // int
+      "status": "active"                      // "active" | "revoked"
+    }
+  ],
+
+  "approvals": {
+    "pending": 2,                             // int — approvals with status == "pending"
+    "oldestPendingAgeSeconds": 341            // int — now − min(requestedAt); null when pending == 0
+  },
+
+  "operational": {
+    "anchoring": {                            // deployment-global (checkpoints are chain-wide, not per-tenant)
+      "enabled": true,                        // bool — anchor worker configured
+      "anchored": 3,                          // int — checkpoints carrying anchor evidence
+      "total": 4,                             // int — all checkpoints
+      "degraded": false                       // bool — AnchorWorker.degraded (consecutive failures)
+    },
+    "deliveries": {                           // tenant-scoped notification delivery counts, all keys always present
+      "pending": 1,                           // int
+      "delivered": 10,                        // int
+      "failed": 0                             // int
+    },
+    "authFailures": {                         // deployment-global, in-memory since process start
+      "assertion_invalid": 2                  // map of reason class → count; {} when none
+    }
+  }
+}
+```
+
+Semantics:
+
+- **Record selection** — gate-call records only; ops-audit records (`action.upstream == "control"`) are excluded, as in `/reports`. A record is in-window when `from <= ts < to`.
+- **Bucketing** — always exactly 48 buckets, oldest → newest, `bucketSeconds = hours * 3600 / 48` (`hours * 75`). Bucket `i` starts at `from + i * bucketSeconds`; a record lands in `min(47, floor((ts − from) / bucketSeconds))`. Empty buckets are present with zero counts.
+- **`totals`** — over the same in-window set. `costUnits` sums `result.costUnits` over executed records only (absent → 0); `activeAgents` counts distinct `actor.agentId`.
+- **`topTools`** — `"{upstream}.{tool}"` keys (the `/reports` `byTool` format); ordered by `calls` desc, then `tool` asc; at most 10.
+- **`budgets`** — every grant of the tenant, including revoked ones, not windowed; ordered by utilization (`spentUnits / maxUnits`) desc, then `grantId` asc.
+- **`approvals`** — pending approvals; `oldestPendingAgeSeconds` is `now − min(requestedAt)` in whole seconds, `null` when none are pending.
+- **`operational.anchoring`** — the `/healthz` anchoring inputs mapped to four always-present keys; checkpoints are chain-wide, so this block is deployment-global and identical across tenants. Without an anchor worker: `enabled: false`, `degraded: false`, counts still populated.
+- **`operational.deliveries`** — tenant-scoped notification delivery counts; `pending`/`delivered`/`failed` are always present, zero-filled.
+- **`operational.authFailures`** — the same reason-class → count map `/healthz` exposes; deployment-global, in-memory since process start; `{}` when none.
+
+Edge cases: an existing tenant with no activity returns `200` with zeroed totals, 48 all-zero buckets, empty `topTools` and `budgets`, `pending: 0` and `oldestPendingAgeSeconds: null` — never an error, never a missing key. Audit records are read, never re-serialized into storage, so audit-record hash stability is unaffected.
+
 ## Health
 
 `GET /healthz` → `{ "ok": true, "issuer": "...", "control_kid": "..." }` (no auth).

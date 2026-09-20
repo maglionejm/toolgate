@@ -115,26 +115,19 @@ GET /v1/control/dashboard?tenantId=<tnt_...>&hours=<int>
 
 ## Computation placement
 
-- **`src/toolgate/server/dashboard.py`** (new): a pure, HTTP-free module exposing one function:
+- **`src/toolgate/server/dashboard.py`** (new): an HTTP-free module exposing one function:
 
   ```python
   def build_dashboard(
-      *,
+      ctx: AppContext,
       tenant_id: str,
       hours: int,                      # raw request value; clamping lives here (single home)
-      now: datetime,                   # injected for deterministic tests
-      records: list[AuditRecord],
-      grants: list[DelegationGrant],
-      pending_approvals: list[ApprovalRequest],
-      checkpoints: list[Checkpoint],
-      anchor_status: dict[str, Any] | None,   # AnchorWorker.status(...) output, or None
-      delivery_counts: dict[str, int],
-      auth_failures: dict[str, int],
+      now: datetime | None = None,     # injected for deterministic tests; defaults to utcnow
   ) -> dict[str, Any]: ...
   ```
 
-  `build_dashboard` owns clamping, windowing, bucketing, ordering, and shape — it is the single source of truth for the contract and is unit-testable with plain model lists (no store, no HTTP).
-- **`control.py`**: a thin `@router.get("/dashboard", dependencies=auditor_dep)` handler that runs `_require_tenant`, gathers the store reads (`list_audit`, `list_grants`, `list_approvals(..., "pending")`, `list_checkpoints`, `delivery_counts`), asks `ctx.anchor_worker` for status when present, and returns `build_dashboard(...)`.
+  `build_dashboard` owns clamping, windowing, bucketing, ordering, and shape — it is the single source of truth for the contract. It takes the app context and performs the store reads itself (`list_audit`, `list_grants`, `list_approvals(..., "pending")`, `list_checkpoints`, `delivery_counts`, plus `ctx.anchor_worker.status(...)` when a worker exists and `ctx.auth_failure_counts`), so the HTTP handler stays a one-liner and unit tests exercise the exact read path the endpoint uses; determinism comes from the injectable `now`. (An earlier draft passed pre-fetched model lists instead; the context-taking form was chosen so the endpoint and the tests cannot drift on *which* reads feed the payload.)
+- **`control.py`**: a thin `@router.get("/dashboard", dependencies=auditor_dep)` handler that runs `_require_tenant` and returns `build_dashboard(ctx, tenantId, hours)`.
 
 ## New store accessor
 

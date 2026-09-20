@@ -113,7 +113,7 @@ if isinstance(result, PendingApproval):
 | `toolgate.server` | Control plane (registry, grants, token endpoint, approvals, revocation, audit) + gate (enforcement pipeline), vault (KMS envelope), notifier (push channels), OAuth broker, Rekor anchoring, SQLite + Postgres stores |
 | `toolgate.sdk` | Agent-side client: token exchange, signed calls, approval flow, typed errors |
 | `toolgate.integrations` | Framework adapters: `anthropic_tools`, `openai_tools`, `langchain_tools` (`pip install 'toolgate-io[langchain]'`) |
-| `toolgate.console` | Operator console (approvals inbox, audit explorer, grants, simulator, reports) served at `/console` |
+| `toolgate.console` | Operator console (dashboard, approvals inbox, audit explorer, grants, simulator, reports, channels, connections) served at `/console` |
 | `toolgate.demo` | End-to-end scenario (`uv run toolgate-demo`); `toolgate demo --live` drives it with a real Claude model (`pip install 'toolgate-io[demo]'`) |
 
 ## MCP & framework adapters
@@ -156,7 +156,7 @@ Full suite in [`docs/`](docs/README.md): [Quickstart](docs/QUICKSTART.md) · [AP
 - `docs/adr/0004` — approvals bound to args hashes; hash-chained signed audit
 - `docs/adr/0005` — Python as the reference implementation
 
-The 0.4–0.5 roadmap is fully shipped (MCP surface, OAuth brokering, transparency-log anchoring, approval push channels, KMS vault, Postgres scale-out, live LLM demo, red-team suite). Next themes live in the [issue tracker](../../issues) as they open: TypeScript SDK rebuild, dashboard, field-level taint.
+The 0.4–0.5 roadmap is fully shipped (MCP surface, OAuth brokering, transparency-log anchoring, approval push channels, KMS vault, Postgres scale-out, live LLM demo, red-team suite). Since then: an operator **dashboard** (first tab of `/console`, backed by `GET /v1/control/dashboard`). Next themes live in the [issue tracker](../../issues) as they open: TypeScript SDK rebuild, field-level taint.
 
 ## Development
 
